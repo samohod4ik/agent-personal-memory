@@ -12,4 +12,4 @@ hermes-pm-bench-	temp-dir prefix retained in ported bench runner code
 PRODUCTION_MARKERS	test fixture strings that intentionally embed production-path markers to assert non-leakage
 OPAQUE_SECRET	synthetic fixture in ported tests/test_validation.py that exercises opaque-secret detection; not a real credential
 dropped source env fallback	PROVENANCE.md doc-only mention, inside the sanctioned-delta record, of the removed HERMES_HOME/F:\Hermes default
-stays in Hermes	ADR-0002 boundary table names excluded host modules verbatim as the boundary record
+stays in Hermes	ADR-0002 boundary table and PROVENANCE not-ported rows name excluded host modules verbatim as the boundary record
