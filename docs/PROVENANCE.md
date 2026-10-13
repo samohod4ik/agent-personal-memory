@@ -68,7 +68,7 @@ carries the rationale.
 | `tools/hygiene_allowlist.txt` | — (new) | — | added | allowlist for the intentional retained markers listed in the table below |
 | `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11) |
 | `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
-| `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` and adds the `agent-personal-memory-mcp` console script |
+| `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` — floor raised to `mcp>=1.28.1` in PH-3 r1 (past the CVE-affected 1.x releases) — and adds the `agent-personal-memory-mcp` console script |
 | `skills/agent-personal-memory/SKILL.md` | — (new) | — | added | new standalone Agent Skill doc (agentskills.io frontmatter): remember/forget policy, candidate→confirmed lifecycle, privacy do/don'ts, the two-phase confirm rule incl. the MCP operator outbox flow (`<data_dir>/confirmations.jsonl` + stderr → `personal_memory_confirm`), and minimal library/MCP embed examples; all API/tool names mirror `__init__.py`/`TOOL_SCHEMAS` verbatim |
 | `LICENSE` | — (new) | — | added | MIT license, holder `samohod4ik` |
 | `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
@@ -315,6 +315,38 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   binding-mismatch denials (mismatched consume does not burn the nonce),
   extra/identity-field rejection, unknown/missing-arg/non-dict rejection,
   failed-send fail-closed behaviour, and `python -m` startup refusal.
+
+### PH-3 review r1 fix notes
+
+- PH3-F-01: `_normalize_payload` is now recursive — decrypted claim
+  `content`/source `snapshot` bytes nested inside result dicts/lists decode
+  to utf-8 text with a `{"encoding": "base64", "data": ...}` fallback for
+  non-utf-8 blobs (same shape as `store._export_bytes`); top-level bytes
+  remain the `export_owner_data` utf-8 JSON document. New
+  `tests/test_mcp_stdio.py` members exercise `rank_claims`,
+  `list_personal_memories(include_content=True)` and a raw non-utf-8
+  `query_sources(include_payload=True)` snapshot in-process, plus
+  `rank_claims`/`include_content` over the real stdio subprocess.
+- PH3-F-02: `_validate_arguments` normalizes `None`→`{}` and still runs the
+  required/extra-field checks, so in-process callers get `ValidationError`
+  instead of a bare `KeyError`/`TypeError` from the dispatch target.
+- PH3-F-03: `tests/test_mcp_stdio.py` `_stderr_text` now polls drained
+  stderr for the expected substring until a deadline instead of returning
+  on the first line, so the startup banner cannot mask the outbox notice.
+- PH3-F-04: verbatim-text seam recorded, not altered — preview
+  `confirmation`/`delete_command` fields and the outbox `body` still
+  mention the source host's `/memory_delete <request_id>` and
+  `/memory_cancel <request_id>` commands, which do not exist on the MCP
+  surface; the mapping is documented in
+  `skills/agent-personal-memory/SKILL.md` ("Command mapping under MCP").
+- PH3-F-05: the `mcp` extra floor is `mcp>=1.28.1`. The green CI run on
+  e828fe7 resolved `mcp==2.3.0`, so the evidence-backed adaptation is the
+  2.x constructor-handler branch (`on_list_tools=`/`on_call_tool=`); the
+  1.x decorator branch remains statically-written fallback code.
+- PH3-F-06: plan-fidelity record — `.github/workflows/ci.yml` (the
+  `pip install ".[mcp]"` install step) was modified in T9 outside its
+  declared modify paths (`pyproject.toml`, `docs/PROVENANCE.md`); noted
+  here, no code change required.
 
 ### T2 notes
 

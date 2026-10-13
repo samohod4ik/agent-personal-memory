@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import sys
 from datetime import datetime, timezone
@@ -194,12 +195,45 @@ def _scrub_nonce(value: Any) -> Any:
     return value
 
 
+def _decode_blob(value: bytes | bytearray) -> Any:
+    """Decode a decrypted blob for the wire: utf-8 text, else a base64
+    record of the same shape as ``store._export_bytes``."""
+    raw = bytes(value)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "encoding": "base64",
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+
+
+def _normalize_nested(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return _decode_blob(value)
+    if isinstance(value, dict):
+        return {key: _normalize_nested(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_nested(item) for item in value]
+    return value
+
+
 def _normalize_payload(result: Any) -> Any:
-    """Coerce owner-flow returns into JSON-RPC-safe values."""
+    """Coerce owner-flow returns into JSON-RPC-safe values.
+
+    Decrypted claim ``content`` and source ``snapshot`` fields are raw
+    ``bytes`` nested inside result dicts and lists, so the whole structure
+    is walked: every blob crosses the wire as utf-8 text, or as a base64
+    record when the payload is not utf-8. Keys and non-bytes values are
+    preserved untouched.
+    """
     if isinstance(result, (bytes, bytearray)):
-        # export_owner_data returns utf-8 JSON bytes.
-        return json.loads(bytes(result).decode("utf-8"))
-    return result
+        # Top-level bytes are export_owner_data's utf-8 JSON document.
+        try:
+            result = json.loads(bytes(result).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return _decode_blob(result)
+    return _normalize_nested(result)
 
 
 class McpToolSurface:
@@ -269,7 +303,7 @@ class McpToolSurface:
         if schema is None:
             raise ValidationError(f"unknown tool: {name}")
         if arguments is None:
-            return {}
+            arguments = {}
         if not isinstance(arguments, dict):
             raise ValidationError("arguments: must be a JSON object")
         properties = schema.get("parameters", {}).get("properties", {})

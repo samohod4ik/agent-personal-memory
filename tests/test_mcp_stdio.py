@@ -7,6 +7,7 @@ JSON-RPC members are gated on the optional ``mcp`` extra being installed.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
@@ -23,7 +24,10 @@ from unittest.mock import patch
 
 import agent_personal_memory as apm
 from agent_personal_memory import mcp as apm_mcp
-from agent_personal_memory.validation import ValidationError
+from agent_personal_memory.validation import (
+    ValidationError,
+    content_hash_for,
+)
 
 try:
     from mcp.types import LATEST_PROTOCOL_VERSION as _PROTOCOL_VERSION
@@ -426,6 +430,60 @@ class DispatchTests(unittest.TestCase):
         payload = self.surface.call_tool("export_owner_data", {})
         self.assertIsInstance(payload, dict)
 
+    def test_none_arguments_still_run_validation(self) -> None:
+        # A missing argument object normalizes to {} and still hits the
+        # required-field check: in-process callers get ValidationError,
+        # not a bare KeyError/TypeError from the dispatch target.
+        for name in ("personal_memory_confirm", "remember_personal_insight"):
+            with self.subTest(tool=name):
+                with self.assertRaises(ValidationError) as raised:
+                    self.surface.call_tool(name)
+                self.assertIn("missing required", str(raised.exception))
+        # A tool with no required fields still accepts a missing object.
+        listed = self.surface.call_tool("list_personal_memories")
+        self.assertEqual(listed["count"], 0)
+
+    def test_rank_claims_content_arrives_as_json_safe_text(self) -> None:
+        self._remember("I drink green tea every morning")
+        ranked = self.surface.call_tool(
+            "rank_claims", {"query_text": "green tea"}
+        )
+        self.assertTrue(ranked)
+        json.dumps(ranked)  # the whole payload must be wire-safe
+        self.assertIsInstance(ranked[0]["content"], str)
+        self.assertIn("green tea", ranked[0]["content"])
+
+    def test_list_with_content_arrives_as_json_safe_text(self) -> None:
+        claim_id = self._remember("I take my coffee black")
+        listed = self.surface.call_tool(
+            "list_personal_memories", {"include_content": True}
+        )
+        json.dumps(listed)
+        item = listed["items"][0]
+        self.assertEqual(item["claim_id"], claim_id)
+        self.assertIsInstance(item["content"], str)
+        self.assertIn("coffee", item["content"])
+
+    def test_non_utf8_snapshot_uses_base64_fallback(self) -> None:
+        blob = b"\xff\xfe\x00\x89raw-blob"
+        created = self.store.register_source(
+            self.surface.actor,
+            source_kind="document",
+            external_ref="test://raw-blob-1",
+            content_hash=content_hash_for(blob),
+            snapshot=blob,
+            observed_at="2020-06-01T00:00:00Z",
+            retention_class="standard",
+        )
+        rows = self.surface.call_tool(
+            "query_sources", {"include_payload": True}
+        )
+        json.dumps(rows)
+        row = next(r for r in rows if r["source_id"] == created["source_id"])
+        snapshot = row["snapshot"]
+        self.assertEqual(snapshot["encoding"], "base64")
+        self.assertEqual(base64.b64decode(snapshot["data"]), blob)
+
 
 @unittest.skipUnless(_SDK_AVAILABLE, "optional 'mcp' extra is not installed")
 class StdioServerTests(unittest.TestCase):
@@ -552,11 +610,14 @@ class StdioServerTests(unittest.TestCase):
         self.assertIn("serverInfo", init["result"])
         self._notify("notifications/initialized")
 
-    def _stderr_text(self, timeout: float = 5.0) -> str:
+    def _stderr_text(self, needle: str, timeout: float = 5.0) -> str:
+        """Poll drained stderr until ``needle`` appears or the deadline."""
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not self._stderr_lines:
+        while True:
+            text = "".join(self._stderr_lines)
+            if needle in text or time.monotonic() >= deadline:
+                return text
             time.sleep(0.05)
-        return "".join(self._stderr_lines)
 
     # --- protocol members -------------------------------------------------
 
@@ -602,7 +663,7 @@ class StdioServerTests(unittest.TestCase):
         self.assertIn("ts", record)
 
         # stderr carried a delivery notice, not the nonce body.
-        stderr_text = self._stderr_text()
+        stderr_text = self._stderr_text("operator outbox")
         self.assertIn("operator outbox", stderr_text)
         self.assertNotIn(nonce, stderr_text)
 
@@ -613,6 +674,23 @@ class StdioServerTests(unittest.TestCase):
         self.assertEqual(
             self._call_tool("list_personal_memories", {})["count"], 0
         )
+
+    def test_content_returning_tools_serialize_over_stdio(self) -> None:
+        self._handshake()
+        self._call_tool(
+            "remember_personal_insight",
+            {"content": "I drink green tea every morning"},
+        )
+        ranked = self._call_tool("rank_claims", {"query_text": "green tea"})
+        self.assertTrue(ranked)
+        self.assertIsInstance(ranked[0]["content"], str)
+        self.assertIn("green tea", ranked[0]["content"])
+        listed = self._call_tool(
+            "list_personal_memories", {"include_content": True}
+        )
+        self.assertEqual(listed["count"], 1)
+        self.assertIsInstance(listed["items"][0]["content"], str)
+        self.assertIn("green tea", listed["items"][0]["content"])
 
     def test_wrong_nonce_denied_over_stdio(self) -> None:
         self._handshake()
