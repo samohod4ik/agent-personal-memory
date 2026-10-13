@@ -73,6 +73,18 @@ carries the rationale.
 | `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
 | `README.ru.md` | — (new) | — | added | RU README stub (T1; mirror lands in T11) |
 | `.gitignore` | — (new) | — | added | repo baseline file extended in T1 with extraction ignores (`.delivery/`, `.env*`, `*.db`, `.venv`, `bench/results/`) |
+| `bench/corpus.json` | `evals/personal-memory-bench/corpus.json` | `f0f6908` | ported | none — verbatim; exactly 10 cases (5 categories × ru/en: acl, deleted, stale, contradictory, bilingual) |
+| `bench/cases/abstention_unknown.json` | `evals/personal-memory-bench/cases/abstention_unknown.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub (no `corpus_version`/`cases`, rejected by `load_corpus`) |
+| `bench/cases/honest_zero_absent.json` | `evals/personal-memory-bench/cases/honest_zero_absent.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub |
+| `bench/cases/pointer_stale.json` | `evals/personal-memory-bench/cases/pointer_stale.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub |
+| `bench/cases/rejected_alternatives.json` | `evals/personal-memory-bench/cases/rejected_alternatives.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub |
+| `bench/cases/score_locality_falsifier.json` | `evals/personal-memory-bench/cases/score_locality_falsifier.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub |
+| `bench/run_bench.py` | `evals/personal-memory-bench/run_bench.py` | `f0f6908` | adapted | plugins-root `sys.path` shim removed (`REPO_ROOT` repointed `HERE.parents[1]` → `HERE.parent`; HERE shim kept so `score` stays importable as a sibling); imports rewired `personal_memory.*` → `agent_personal_memory.*`; module docstring reworded; CLI shape, temp-store discipline, `_require_temp_store_dir` guard and `hermes-pm-bench-` tmp prefix (allowlisted) verbatim |
+| `bench/score.py` | `evals/personal-memory-bench/score.py` | `f0f6908` | ported | none — verbatim; the source scorer carries no host coupling |
+| `bench/test_bench_runner.py` | `evals/personal-memory-bench/test_bench.py` | `f0f6908` | adapted | renamed (bench/ is its own unittest root); plugins-root `sys.path` shim removed (HERE shim kept for sibling imports); `PRODUCTION_MARKERS` retained verbatim (allowlisted); all members verbatim |
+| `bench/README.md` | `evals/personal-memory-bench/README.md` | `f0f6908` | adapted | run/unittest commands repointed `evals/personal-memory-bench/` → `bench/`; intro de-milestoned (M2-01 → package API) and "This PR" → "This suite"; production-path sentence reworded to never name a host path; results path → `bench/results/component/` + gitignore note; `docs/adr/0013` reference dropped (no equivalent ADR in this repo — provenance pointer substituted) |
+| `bench/CHECKLIST.md` | `evals/personal-memory-bench/CHECKLIST.md` | `f0f6908` | adapted | title de-namespaced (Alisa plan → `bench/` suite); Related block repointed `evals/…` → `bench/…` and `plugins/personal_memory/score_locality.py` → `src/agent_personal_memory/score_locality.py`; `docs/adr/0017` reference replaced with the `engines/mem0_shadow.py` module pointer; all criteria text verbatim |
+| `bench/QUALITY_CRITERIA.md` | `evals/personal-memory-bench/QUALITY_CRITERIA.md` | `f0f6908` | adapted | intro de-hostnamed; Related block: bench README ref repointed to `bench/README.md` with the upstream `evals/personal-memory-bench/README.md` path kept as a provenance mention, `docs/adr/0012`/`0016` replaced by `src/` module refs (those ADRs are not in this repo), score_locality ref repointed to `src/`; "Verified on current main" reworded to the ported package; erase-path note reworded to the standalone confirm-gate (`consume_delete_request` / `personal_memory_confirm`); all criterion text verbatim |
 
 ### Source files intentionally not ported
 
@@ -103,6 +115,25 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
 | `plugins/personal_memory/tests/test_inject.py` | not-ported | inject hook coverage; stays in Hermes |
 | `plugins/personal_memory/tests/test_live_handler_payloads.py` | not-ported | live handler payload shapes; stays in Hermes |
 | `plugins/personal_memory/tests/spikes/test_sqlcipher_spike.py` | not-ported | sqlcipher spike fixture; stays in Hermes |
+
+### T7 notes
+
+- `bench/` is its own test root (`python -m unittest discover -s bench`);
+  no `__init__.py` needed — discovery puts `bench/` on `sys.path` and the
+  HERE shim in `run_bench.py`/`test_bench_runner.py` covers direct-script
+  invocation, exactly as the source eval did.
+- `corpus.json` and `cases/*.json` verified byte-identical to `f0f6908`
+  (`diff` clean); the corpus holds exactly 10 cases and `load_corpus`
+  rejects every `cases/` stub, so the falsifier pack stays outside the
+  10-case denominator.
+- `run_bench.py` deltas vs source: two removed lines (`PLUGINS_ROOT`
+  shim), one repointed constant (`REPO_ROOT`), four rewired import lines,
+  one reworded docstring line. All seeding, query, scoring, CLI and
+  output logic is verbatim; `component --repeats 1` yields 10/10.
+- With `bench/QUALITY_CRITERIA.md` present, the `skipUnless` guard in
+  `tests/test_score_locality.py` self-activated: the member now runs and
+  passes, asserting on the upstream README provenance mention retained
+  in the Related block.
 
 ### T6 notes
 

@@ -47,9 +47,9 @@ _FORBIDDEN_IMPORT_PARTS = frozenset(
     }
 )
 _FORBIDDEN_IMPORT_PREFIXES = (
-    "mini" + "app",          # miniapp, miniapp_contract, miniapp_handlers
-    "night_" + "cycle",      # night_cycle1_tool_descriptions
-    "travel_" + "compute",   # travel_compute_bridge
+    "mini" + "app",          # mini-app module family (contract/handlers/api)
+    "night_" + "cycle",      # night-cycle tool descriptions module
+    "travel_" + "compute",   # travel compute bridge module
 )
 
 # Regex sweep over src/ text for host markers that could hide outside
@@ -222,7 +222,7 @@ class ProvenanceCompletenessTests(unittest.TestCase):
                     any(_STATUS_RE.search(row) for row in matching),
                     f"{stem}: row lacks a disposition status",
                 )
-        # The source tests/spikes/ directory is recorded too.
+        # The source spike-test directory is recorded too.
         self.assertIn("spik" + "es", text)
 
 

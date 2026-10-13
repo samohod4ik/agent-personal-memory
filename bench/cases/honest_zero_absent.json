@@ -1,0 +1,15 @@
+{
+  "id": "honest_zero_absent",
+  "criterion_id": "C-HONEST-ZERO",
+  "category_note": "checklist fixture; not a corpus.json category. Absent authorized memory must score honest-zero, not green Recall@k.",
+  "expect": "honest_zero",
+  "actors": {
+    "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+  },
+  "seed": {
+    "sources": [],
+    "claims": [],
+    "mutations": []
+  },
+  "sketch": "Alice asks for a stored allergy. No claim was ever written. Query returns authorized-empty / no_memory. False-memory rate must be 0. Do not award Recall@k = 1.0 on empty gold."
+}
