@@ -3,13 +3,20 @@
 #
 # Format: one entry per line as "<regex><TAB><reason>"; "<regex> # reason" is
 # also accepted. Blank lines and lines starting with '#' are comments.
-# A scan hit is suppressed when an allowlist regex matches the source line
-# containing the hit.
+#
+# Suppression is PER MATCH SPAN (T12, PH1-F-03/PH2-F-04): a scan hit is
+# suppressed only when an allowlist regex's match on the same line overlaps
+# the hit's own span. Entries must therefore match the marker text itself
+# (plus immediate context); a phrase elsewhere on the line suppresses
+# nothing.
 hermes\.personal_memory\.lookup\.v1	crypto HKDF/AAD lookup identifier retained verbatim for ciphertext format compatibility
 plugins\.personal-memory	logger name prefix retained verbatim for log-source parity with the source
-telegram:	external_ref label shape kept in types.py for record-format compatibility
+telegram:(?!\d)	external_ref label shape `telegram:{label}:{digest}` kept in types.py/mutations.py for record-format compatibility; numeric `telegram:<id>` forms stay flagged
 hermes-pm-bench-	temp-dir prefix retained in ported bench runner code
-PRODUCTION_MARKERS	test fixture strings that intentionally embed production-path markers to assert non-leakage
+PRODUCTION_MARKERS\s*=\s*\([^)\n]*\)	bench self-test fixture tuple (bench/test_bench_runner.py) embedding host-path marker strings to assert non-leakage
 OPAQUE_SECRET	synthetic fixture in ported tests/test_validation.py that exercises opaque-secret detection; not a real credential
-dropped source env fallback	PROVENANCE.md doc-only mention, inside the sanctioned-delta record, of the removed HERMES_HOME/F:\Hermes default
-stays in Hermes	ADR-0002 boundary table and PROVENANCE not-ported rows name excluded host modules verbatim as the boundary record
+AKIAIOSFODNN7EXAMPLE	the AWS documentation example access-key id, reused verbatim as a synthetic validator fixture
+Bearer ya29\.abcdefghijklmnop	the Google documentation example bearer token, reused verbatim as a synthetic validator fixture
+eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk	the jwt.io example token, reused verbatim as a synthetic validator fixture
+["']-----BEGIN RSA PRIVATE KEY-----["']	bare quoted RSA PEM-header literal is a synthetic validator fixture; a real PEM leaks key material beyond the quoted header line and stays flagged
+`[^`]*(?:pre_gateway_dispatch|miniapp_|night_cycle1|peer_import|travel_compute|plugin\.yaml|spikes|HERMES_HOME|F:[\\/]Hermes)[^`]*`	backticked names of not-ported host modules and dropped host defaults in the PROVENANCE file map and ADR-0002 boundary record — doc-only mentions of what stays in Hermes

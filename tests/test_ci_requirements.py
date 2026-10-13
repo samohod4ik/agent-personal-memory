@@ -12,7 +12,7 @@ file became a meta-test over the extraction layout:
 - ``src/`` carries zero host imports or host markers (an AST check of
   every import statement plus a regex sweep and an env-var audit);
 - no tracked file contains host-absolute paths (``git ls-files`` plus the
-  same pattern family and allowlist mechanism as
+  exact ``HOST_PATH_PATTERNS`` and per-match-span allowlist machinery of
   ``tools/hygiene_scan.py``).
 """
 
@@ -73,24 +73,22 @@ _FORBIDDEN_TEXT_PATTERNS = tuple(
     )
 )
 
+# Env-read audit (PH2-F-05): covers ``environ[...]``/``environ.get/``
+# ``setdefault/pop(...)`` and ``getenv(...)`` reads reached through the
+# ``os`` module object, any aliased ``<module>.`` prefix, and
+# ``from os import environ/getenv`` bare call forms — with any-case env
+# names. One optional ``<module>.`` prefix and one optional
+# ``.get/.setdefault/.pop`` suffix keep the expression readable while the
+# ``[\[\(]`` + quote shape pins actual reads.
 _ENV_READ = re.compile(
-    r"os\.(?:environ(?:\.get)?|getenv)\s*[\[\(]\s*['\"]([A-Z0-9_]+)"
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
+    r"(?:environ(?:\.(?:get|setdefault|pop))?|getenv)"
+    r"\s*[\[\(]\s*['\"]([A-Za-z0-9_]+)"
 )
 _ALLOWED_ENV_VARS = frozenset({"PERSONAL_MEMORY_DATA_DIR"})
 
 _SYS_PATH_SHIM = re.compile(r"sys\.path\s*\.(insert|append)")
 _ENV_TOUCH = re.compile(r"os\.environ|os\.getenv")
-
-# Host-absolute path patterns, same family as tools/hygiene_scan.py:
-# drive-absolute paths (any drive letter, either separator) and POSIX
-# user-home roots. No literal host path appears in this file.
-_HOST_PATH_PATTERNS = tuple(
-    re.compile(pattern)
-    for pattern in (
-        r"(?<![\w])[A-Za-z]:[\/]",
-        r"(?<![\w])/(?:home|Users)/",
-    )
-)
 
 # New tracked files that must carry an added/adapted provenance row.
 _REQUIRED_NEW_FILE_ROWS = (
@@ -352,22 +350,26 @@ class PackagingFloorTests(unittest.TestCase):
 
 
 class TrackedFileHygieneTests(unittest.TestCase):
-    """(c) No host-absolute paths in tracked files."""
+    """(c) No host-absolute paths in tracked files.
+
+    Uses the scanner's own ``HOST_PATH_PATTERNS`` and per-match-span
+    allowlist suppression, so this meta-test and ``tools/hygiene_scan.py``
+    can never disagree about what a host path is or what an allowlist
+    entry covers.
+    """
 
     def test_no_host_absolute_paths_in_tracked_files(self) -> None:
         scanner = _load_hygiene_scanner()
         allowlist = scanner.load_allowlist(scanner.ALLOWLIST_PATH)
+        compiled = [re.compile(p) for p in scanner.HOST_PATH_PATTERNS]
         hits: list[str] = []
         for path in scanner.tracked_files(REPO_ROOT):
             if scanner.is_binary(path):
                 continue
             rel = path.relative_to(REPO_ROOT).as_posix()
             for lineno, line in scanner.iter_text_lines(path):
-                if any(entry.search(line) for entry in allowlist):
-                    continue
-                for pattern in _HOST_PATH_PATTERNS:
-                    if pattern.search(line):
-                        hits.append(f"{rel}:{lineno}: {pattern.pattern}")
+                for match in scanner.unsuppressed_hits(line, compiled, allowlist):
+                    hits.append(f"{rel}:{lineno}: {match.re.pattern}")
         self.assertEqual(hits, [])
 
 

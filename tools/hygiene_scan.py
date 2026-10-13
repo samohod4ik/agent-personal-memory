@@ -2,10 +2,14 @@
 """Privacy hygiene scanner for the agent-personal-memory repository.
 
 Scans tracked text files (enumerated via ``git ls-files``) for host-coupling
-markers, host-absolute paths and secret-shaped literals. A hit is suppressed
-when the source line containing it matches a regex from
-``tools/hygiene_allowlist.txt`` (intentional retained markers, documented in
-``docs/PROVENANCE.md``).
+markers, host-absolute paths and secret-shaped literals.
+
+Allowlist suppression is **per match span** (T12, findings PH1-F-03 /
+PH2-F-04): a hit is suppressed only when a regex from
+``tools/hygiene_allowlist.txt`` matches text on the same line that *overlaps
+the hit's own span*. Entries therefore name the marker text itself (plus
+immediate context); a phrase merely appearing elsewhere on the line
+suppresses nothing.
 
 The scanner never scans ``.git/``, ``.delivery/``, the allowlist file or
 itself. Exits 0 and prints ``hygiene scan: clean`` on pass; on hits it
@@ -17,6 +21,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Iterator, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALLOWLIST_PATH = Path(__file__).resolve().parent / "hygiene_allowlist.txt"
@@ -26,15 +31,32 @@ EXCLUDED_DIRS = (".git", ".delivery")
 # The scanner must not flag its own pattern definitions or the allowlist.
 EXCLUDED_FILES = frozenset({Path(__file__).resolve(), ALLOWLIST_PATH})
 
+# Host-absolute paths: any drive letter with either separator, and POSIX
+# user-home roots. The ``(?<![\w])`` lookbehind keeps URI schemes like
+# ``https://`` or ``file://`` (letter preceded by a word char) unflagged.
+HOST_PATH_PATTERNS: tuple[str, ...] = (
+    r"(?<![\w])[A-Za-z]:[\\/]",
+    r"(?<![\w])/(?:home|Users)/",
+)
+
+# Secret-name alternation shared by the assignment shapes below. A bare
+# ``key`` term is deliberately absent (``primary_key``/``sort_key`` are not
+# credentials); the name must end in a listed credential word.
+_SECRET_NAME = (
+    r"api[_-]?key|secret[_-]?key|access[_-]?key|private[_-]?key"
+    r"|client[_-]?secret|secret|token|password|passwd"
+)
+# Credential-shaped value run used by the unquoted branch: requires at least
+# one digit so ``token = generate()``-style code is not flagged.
+_SECRET_VALUE_CHARS = r"A-Za-z0-9_.\-"
+
 # Forbidden-content patterns (regular expressions searched per line).
 SCAN_PATTERNS: tuple[str, ...] = (
+    # Host-coupling markers.
     r"from\s+gateway",
     r"import\s+gateway",
     r"gateway\.session_context",
     r"HERMES_HOME",
-    r"F:\\Hermes",
-    r"G:\\",
-    r"C:\\Users\\",
     r"plugins\.personal_memory\.",
     r"\.inject\b",
     r"peer_import",
@@ -45,7 +67,33 @@ SCAN_PATTERNS: tuple[str, ...] = (
     r"spikes",
     r"pre_gateway_dispatch",
     r"plugin\.yaml",
-    r"(?i)(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{8,}",
+    # Host-absolute paths (PH1-F-01/PH2-F-03: generic drive letters, both
+    # separators, plus POSIX user-home roots).
+    *HOST_PATH_PATTERNS,
+    # Real telegram identifiers; the allowlisted ``telegram:{label}:{digest}``
+    # external_ref shape is non-numeric and stays unflagged.
+    r"\btelegram:\d",
+    # Secret-shaped assignments (PH1-F-02): ``name = "…"``, ``name: "…"``
+    # (YAML/env style), ``name => "…"`` and bare ``NAME=value`` with a
+    # digit-bearing value; the word boundary after the name keeps
+    # ``tokenize``/``secretion`` out, and no leading ``\b`` keeps
+    # ``session_token``/``mysecret`` in.
+    r"(?i)(?:" + _SECRET_NAME + r")\b['\"]?\s*(?:=>|[:=])\s*['\"][^'\"]{8,}",
+    r"(?i)(?:" + _SECRET_NAME + r")\b['\"]?\s*(?:=>|[:=])\s*"
+    r"(?=[" + _SECRET_VALUE_CHARS + r"]{8,}\b)[" + _SECRET_VALUE_CHARS + r"]*\d[" + _SECRET_VALUE_CHARS + r"]*",
+    # Short string multiplied into a secret: ``secret = "x" * 32``.
+    r"(?i)(?:" + _SECRET_NAME + r")\b['\"]?\s*(?:=>|[:=])\s*['\"][^'\"]{0,16}['\"]\s*\*\s*\d+",
+    # Well-known token literals (PH1-F-02).
+    r"\bsk-[A-Za-z0-9_\-]{8,}",
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\b[Bb]earer[ \t]+[A-Za-z0-9][A-Za-z0-9_.\-~=]{9,}",
+    r"\bgh[pousr]_[A-Za-z0-9]{16,}",
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}",
+    r"\bxox[baprs]-[A-Za-z0-9\-]{8,}",
+    r"\bAIza[0-9A-Za-z_\-]{30,}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----",
+    # JWT (header.payload.signature) literals.
+    r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}",
 )
 
 
@@ -119,6 +167,29 @@ def iter_text_lines(path: Path):
     yield from enumerate(text.splitlines(), 1)
 
 
+def _spans_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
+
+
+def unsuppressed_hits(
+    line: str,
+    compiled: Sequence[re.Pattern[str]],
+    allowlist: Sequence[re.Pattern[str]],
+) -> Iterator[re.Match[str]]:
+    """Yield scan-pattern matches not covered by an allowlist span.
+
+    Per-match-span suppression: an allowlist regex must match text that
+    overlaps the hit's own span on the same line — merely appearing on the
+    same line no longer masks unrelated hits.
+    """
+    allow_spans = [m.span() for entry in allowlist for m in entry.finditer(line)]
+    for pattern in compiled:
+        for match in pattern.finditer(line):
+            if any(_spans_overlap(match.span(), span) for span in allow_spans):
+                continue
+            yield match
+
+
 def main() -> int:
     compiled = [re.compile(p) for p in SCAN_PATTERNS]
     allowlist = load_allowlist(ALLOWLIST_PATH)
@@ -128,12 +199,9 @@ def main() -> int:
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
         for lineno, line in iter_text_lines(path):
-            if any(al.search(line) for al in allowlist):
-                continue
-            for pattern in compiled:
-                if pattern.search(line):
-                    print(f"{rel}:{lineno}: {pattern.pattern}")
-                    hits += 1
+            for match in unsuppressed_hits(line, compiled, allowlist):
+                print(f"{rel}:{lineno}: {match.re.pattern}")
+                hits += 1
     if hits:
         print(f"hygiene scan: {hits} hit(s)", file=sys.stderr)
         return 1
