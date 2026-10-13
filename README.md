@@ -235,6 +235,11 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
   in use. `master.key` is a plaintext KEK file — whoever holds it plus the
   database can decrypt everything, so protect `<data_dir>` with OS
   permissions/full-disk encryption and never sync or commit it.
+- Public owner flows accept `store=None`, which opens — and creates if
+  missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
+  `~/.agent-personal-memory`). In embedded use always pass an explicit
+  `store=`: a forgotten argument silently reads/writes the host's default
+  location instead of the intended store.
 - Erasure is physical inside the live database but cannot reach backups,
   snapshots, or OS-level copies made before it (the `ErasureReceipt`
   carries an explicit backup-retention note).

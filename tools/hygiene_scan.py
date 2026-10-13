@@ -14,6 +14,12 @@ suppresses nothing.
 The scanner never scans ``.git/``, ``.delivery/``, the allowlist file or
 itself. Exits 0 and prints ``hygiene scan: clean`` on pass; on hits it
 prints ``<file>:<line>: <pattern>`` per hit and exits 1.
+
+Known limits (independent review is the documented backstop for these):
+identifiers assembled by string concatenation or escapes evade the
+literal-shape patterns (e.g. an id written as ``"123" + "456"``), opaque
+service handles such as ``t.me`` links are not modeled, and text seeded
+with NUL bytes or not decodable as UTF-8 is skipped by the line iterator.
 """
 from __future__ import annotations
 
@@ -73,6 +79,9 @@ SCAN_PATTERNS: tuple[str, ...] = (
     # Real telegram identifiers; the allowlisted ``telegram:{label}:{digest}``
     # external_ref shape is non-numeric and stays unflagged.
     r"\btelegram:\d",
+    # Numeric owner/chat identifiers under their canonical key names only,
+    # so ``version=1``, ``port=8080``, ``max_limit=...`` stay unflagged.
+    r"\b(?:chat_id|user_id)\s*[:=]\s*[\"']?\d{6,}",
     # Secret-shaped assignments (PH1-F-02): ``name = "…"``, ``name: "…"``
     # (YAML/env style), ``name => "…"`` and bare ``NAME=value`` with a
     # digit-bearing value; the word boundary after the name keeps

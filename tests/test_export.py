@@ -10,6 +10,7 @@ from pathlib import Path
 
 from agent_personal_memory.export import explain_claim, export_owner_data
 from agent_personal_memory.lifecycle import MemoryState
+from agent_personal_memory.query import get_authorized_claim
 from agent_personal_memory.store import (
     AUDIT_ACTIONS,
     NotFoundError,
@@ -286,6 +287,50 @@ class PersonalMemoryOwnershipExportTests(unittest.TestCase):
         self.assertEqual(str(foreign.exception), "Claim not found")
         self.assertEqual(str(erased.exception), "Claim not found")
         self.assertEqual(repr(missing.exception), repr(foreign.exception))
+
+    def test_explain_claim_restricted_and_expired_are_not_found(self) -> None:
+        """explain_claim mirrors get_authorized_claim's restricted/expired
+        invisibility with byte-identical denial text (T12 security delta)."""
+        alice_source = self._register(
+            ALICE,
+            **_source_kwargs(
+                snapshot=ALICE_SOURCE, title=ALICE_TITLE, external_ref="ref-1"
+            ),
+        )
+        restricted = self._create(
+            ALICE,
+            source_ids=[str(alice_source["source_id"])],
+            content=b"secret address",
+            sensitivity="restricted",
+        )
+        expired = self._create(
+            ALICE,
+            source_ids=[str(alice_source["source_id"])],
+            content=b"stale fact",
+        )
+        conn = self.store._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_claim_versions SET expires_at = ? WHERE claim_id = ?",
+                ("2020-01-01T00:00:00Z", expired["claim_id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        for claim_id in (str(restricted["claim_id"]), str(expired["claim_id"])):
+            with self.subTest(claim_id=claim_id):
+                with self.assertRaises(NotFoundError) as denied:
+                    explain_claim(ALICE, claim_id, store=self.store)
+                # Byte-level parity with the authorized-read denial.
+                with self.assertRaises(NotFoundError) as query_denied:
+                    get_authorized_claim(ALICE, claim_id, store=self.store)
+                self.assertEqual(str(denied.exception), "Claim not found")
+                self.assertEqual(
+                    str(denied.exception), str(query_denied.exception)
+                )
+                self.assertEqual(
+                    repr(denied.exception), repr(query_denied.exception)
+                )
 
     def test_export_preserves_binary_snapshot_and_content(self) -> None:
         snapshot = b"\xff\x00binary-snap"

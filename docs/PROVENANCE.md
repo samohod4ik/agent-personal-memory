@@ -14,7 +14,7 @@ carries the rationale.
 | `src/agent_personal_memory/types.py` | `plugins/personal_memory/types.py` | `f0f6908` | ported | doc-only delta (PH1-F-06, T11): module docstring reworded host-neutrally — "the personal-memory plugin" → "the agent-personal-memory package"; code verbatim (retains `telegram:` external_ref label shape) |
 | `src/agent_personal_memory/lifecycle.py` | `plugins/personal_memory/lifecycle.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/crypto.py` | `plugins/personal_memory/crypto.py` | `f0f6908` | ported | none — verbatim (retains `hermes.personal_memory.lookup.v1` HKDF/AAD info string) |
-| `src/agent_personal_memory/store.py` | `plugins/personal_memory/store.py` | `f0f6908` | adapted | `default_data_dir` resolution changed to explicit arg → `PERSONAL_MEMORY_DATA_DIR` → `~/.agent-personal-memory`; dropped source env fallback (`HERMES_HOME` → `F:\Hermes\data\personal-memory`); constructor signature widened to `data_dir: str \| Path \| None`; logger name `plugins.personal-memory` retained verbatim; PH1-F-06 doc-only delta (T11): module docstring "the disabled personal-memory plugin" → "the agent-personal-memory store" and `SchemaVersionError` docstring "this plugin build" → "this package build" |
+| `src/agent_personal_memory/store.py` | `plugins/personal_memory/store.py` | `f0f6908` | adapted | `default_data_dir` resolution changed to explicit arg → `PERSONAL_MEMORY_DATA_DIR` → `~/.agent-personal-memory`; dropped source env fallback (`HERMES_HOME` → `F:\Hermes\data\personal-memory`); constructor signature widened to `data_dir: str \| Path \| None`; logger name `plugins.personal-memory` retained verbatim; PH1-F-06 doc-only delta (T11): module docstring "the disabled personal-memory plugin" → "the agent-personal-memory store" and `SchemaVersionError` docstring "this plugin build" → "this package build"; T12 security delta (sanctioned): `explain_claim` now mirrors `get_authorized_claim`'s `restricted`/`expires_at` invisibility with a byte-identical `NotFoundError` denial — an upstream `f0f6908` inconsistency reported to the owner (Hermes NOT modified); `__init__` creates a *new* `data_dir` with mode 0700 (POSIX; a pre-existing user dir is never chmod'd) |
 | `src/agent_personal_memory/validation.py` | `plugins/personal_memory/validation.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/erasure.py` | `plugins/personal_memory/erasure.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/fts_index.py` | `plugins/personal_memory/fts_index.py` | `f0f6908` | ported | none — verbatim full module (T2 had landed only the erasure-side helpers; T3 added `build_claim_fts_index`/`fts_index_present`/`rank_claims_fts` verbatim, so the file is now byte-identical to the source; tenant scope stays a `tenant_id = ?` predicate inside the FTS query plus authorized-candidate post-checks, exactly as source) |
@@ -63,7 +63,7 @@ carries the rationale.
 | `tests/test_api_surface.py` | — (new) | — | added | exercises every `__init__` export: resolves each `__all__` name, inspects callables, asserts `personal_memory_confirm` exists in `TOOL_SCHEMAS` taking only `nonce`, runs one end-to-end owner flow incl. the confirm-gate consume path |
 | `tests/test_package_metadata.py` | — (new) | — | added | package metadata smoke test created in T1 (dist name, `__version__`, LICENSE holder); T6 removed its `src/` `sys.path` fallback (PH1-F-05) — the install-dependent members are gated on `_dist_installed()` so a bare checkout reports honest skips and a broken install cannot look green |
 | `tests/test_tool_surface.py` | `plugins/personal_memory/tests/test_tools.py` | `f0f6908` | adapted | folds the source `tools.py` coverage onto the standalone API surface (the host `handle_*` wrappers stay in Hermes); see T6 notes for the member map |
-| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery; T11 hardening: provenance rows are matched by first-cell/exact backticked file stem (not substring, PH2-F-02), every `git ls-files` entry must have a first-cell row (PH2-F-01), `_REQUIRED_NEW_FILE_ROWS` covers ci.yml/SKILL.md/threat-model/quickstart test, and a meta assert pins the `cryptography>=42` floor in `pyproject.toml` (PH2-F-08); T12 hardening: `_ENV_READ` covers `environ.setdefault/pop`, bare `environ`/`getenv` call forms, aliased module prefixes and any-case env names (PH2-F-05), and the tracked-file host-path check reuses the scanner's `HOST_PATH_PATTERNS` + per-match-span `unsuppressed_hits` so test and scanner cannot diverge |
+| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery; T11 hardening: provenance rows are matched by first-cell/exact backticked file stem (not substring, PH2-F-02), every `git ls-files` entry must have a first-cell row (PH2-F-01), `_REQUIRED_NEW_FILE_ROWS` covers ci.yml/SKILL.md/threat-model/quickstart test, and a meta assert pins the `cryptography>=42` floor in `pyproject.toml` (PH2-F-08); T12 hardening: `_ENV_READ` covers `environ.setdefault/pop`, bare `environ`/`getenv` call forms, aliased module prefixes and any-case env names (PH2-F-05), and the tracked-file host-path check reuses the scanner's `HOST_PATH_PATTERNS` + per-match-span `unsuppressed_hits` so test and scanner cannot diverge; T12 security-review fix: `ScannerPatternTests` pins per-span allowlist anchoring (backticked bare-marker literals, the exact `OPAQUE_SECRET` fixture) and the `chat_id`/`user_id` numeric-id pattern |
 | `tools/hygiene_scan.py` | — (new) | — | adapted | repo hygiene scanner (tracked-file scan for host-coupling markers, host paths, secret shapes); created in T1 so the CI scan stays green from PH-2; T12 hardened the pattern set (generic drive-absolute + POSIX-home paths, colon/unquoted/multiplied secret assignments, `telegram:<digits>`, well-known token literals) and switched allowlist suppression from per-line to per-match-span — see T12 notes |
 | `tools/hygiene_allowlist.txt` | — (new) | — | adapted | allowlist for the intentional retained markers listed in the table below; T12 rewrote entries so each regex matches the marker text itself (span-overlap suppression) |
 | `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11 with the confirm-gate split decision and the MCP command-mapping note) |
@@ -420,6 +420,60 @@ are in `tools/hygiene_scan.py`, `tools/hygiene_allowlist.txt` and
   were the intentional `MARKER_SECRETS`/`embedded_tokens`/`PRODUCTION_MARKERS`
   fixtures and the documented `F:\Hermes`/`HERMES_HOME` doc mentions,
   all re-allowlisted at span granularity.
+
+### T12 security-review fix notes
+
+Follow-up fixes for the PH-4 T12 security review (1 Important, 5 Minor;
+no source-code port regressions found):
+
+- F1 (outbox custody): `mcp.py` `make_outbox_send` now appends via
+  `os.open(O_CREAT|O_WRONLY|O_APPEND, 0o600)` + `os.fdopen`, with a
+  best-effort `os.chmod(path, 0o600)` before and after the write so a
+  pre-existing loose `confirmations.jsonl` is tightened (the chmod is
+  tolerated to no-op where the filesystem ignores POSIX modes). The
+  outbox parent dir is created via `makedirs(mode=0o700)`, and
+  `store.py` `__init__` creates a *new* `data_dir` with mode 0700 so the
+  db/wal/outbox inherit owner-only custody — a pre-existing user dir is
+  never chmod'd. This matches the 0600-equivalent custody that
+  `docs/threat-model.md` already claimed.
+- F2 (MCP error leakage): `_error_text` whitelists known exception types
+  (`ValidationError`, `NotFoundError`, `ConflictError`, `ForbiddenError`,
+  `TrustedDeleteDenied`, `ValueError`, `KeyError` — subclasses included
+  via an MRO walk) to `TypeName: message`; any other exception collapses
+  to `InternalError: operation failed` so host paths and internals never
+  reach a tool result. Both SDK branches (1.x decorator → raised
+  `RuntimeError`, 2.x constructor → `CallToolResult(isError)`) route
+  through it.
+- F3 (sanctioned upstream delta): `store.py` `explain_claim` now mirrors
+  `get_authorized_claim`'s `restricted` + `expires_at` invisibility with
+  a byte-identical `NotFoundError("Claim not found")` denial — at
+  `f0f6908` the explain path exposed restricted/expired claim metadata
+  that the authorized-read path hides. Recorded on the `store.py`
+  file-map row; **reported upstream to the owner — Hermes NOT
+  modified.**
+- F4 (implicit-store foot-gun): documented in `README.md`,
+  `README.ru.md` and `skills/agent-personal-memory/SKILL.md` — public
+  owner flows accept `store=None`, which opens/creates the default data
+  dir; embedded use should always pass an explicit store. No API change.
+- F5 (allowlist tightening): the single over-broad backtick-span entry
+  was split into per-literal anchored entries (` `HERMES_HOME` `,
+  ` `F:\Hermes` ` and each not-ported module/path name), and
+  `OPAQUE_SECRET` is anchored to the exact fixture assignment — a
+  backtick span mixing a marker with a real secret still flags.
+- F6 (scanner coverage): added a `(chat_id|user_id)` numeric-id
+  assignment pattern anchored to the key names so `version`/`port`/
+  `max_limit` stay unflagged, plus a "Known limits" block in the
+  `hygiene_scan.py` docstring (str-concatenated ids, opaque service
+  handles, NUL-seeded text — independent review is the backstop).
+- Regression coverage: `tests/test_mcp_stdio.py` (outbox created 0600 /
+  pre-existing loose file tightened, POSIX-mode asserts with a Windows
+  write-path fallback; `_error_text` whitelist + collapse; SDK
+  wire-level internal-error text), `tests/test_store.py` (created
+  `data_dir` is 0700 on POSIX), `tests/test_export.py`
+  (restricted/expired `explain_claim` parity with
+  `get_authorized_claim`), `tests/test_ci_requirements.py`
+  (`ScannerPatternTests` pinning the allowlist anchoring and the new
+  numeric-id pattern).
 
 ### T2 notes
 

@@ -349,6 +349,87 @@ class PackagingFloorTests(unittest.TestCase):
         self.assertIn('"cryptography>=42"', match.group(1))
 
 
+class ScannerPatternTests(unittest.TestCase):
+    """(e) Scanner pattern/allowlist semantics pinned at span granularity.
+
+    Synthetic line contents are assembled from split literals so this file
+    does not trip the scanner on the very shapes it feeds to the scanner.
+    """
+
+    def _scanner(self):
+        scanner = _load_hygiene_scanner()
+        allowlist = scanner.load_allowlist(scanner.ALLOWLIST_PATH)
+        compiled = [re.compile(p) for p in scanner.SCAN_PATTERNS]
+        return scanner, compiled, allowlist
+
+    def test_backticked_marker_still_suppressed_but_marker_plus_secret_flags(
+        self,
+    ) -> None:
+        scanner, compiled, allowlist = self._scanner()
+        # Bare backticked marker names stay suppressed.
+        for name in ("HERMES" + "_HOME", "peer_" + "import", "spik" + "es"):
+            line = "`" + name + "`"
+            self.assertEqual(
+                list(scanner.unsuppressed_hits(line, compiled, allowlist)),
+                [],
+                line,
+            )
+        # A backtick span mixing a marker with a real secret still flags
+        # both the marker and the secret (anchored bare-token entries).
+        secret = "ghp_" + "0123456789abcdef"
+        line = "`" + "HERMES" + "_HOME " + secret + "`"
+        hits = list(scanner.unsuppressed_hits(line, compiled, allowlist))
+        self.assertGreaterEqual(len(hits), 2, line)
+        line = "`" + "HERMES" + "_HOME` plus " + secret
+        self.assertTrue(
+            list(scanner.unsuppressed_hits(line, compiled, allowlist)), line
+        )
+
+    def test_opaque_secret_allowlist_is_anchored_to_exact_fixture(self) -> None:
+        scanner, compiled, allowlist = self._scanner()
+        fixture_src = (TESTS_ROOT / "test_validation.py").read_text(
+            encoding="utf-8"
+        )
+        line = next(
+            raw
+            for raw in fixture_src.splitlines()
+            if "OPAQUE_" + "SECRET =" in raw
+        )
+        self.assertEqual(
+            list(scanner.unsuppressed_hits(line, compiled, allowlist)), []
+        )
+        # The same literal under a different name still flags.
+        variant = line.replace("OPAQUE_" + "SECRET", "OTHER_" + "SECRET")
+        self.assertTrue(
+            list(scanner.unsuppressed_hits(variant, compiled, allowlist))
+        )
+
+    def test_numeric_id_pattern_flags_named_ids_only(self) -> None:
+        scanner, compiled, allowlist = self._scanner()
+        flagged_lines = (
+            "chat_" + 'id = "1234567"',
+            "user_" + "id: 987654321",
+            "user_" + "id=123456",
+        )
+        for line in flagged_lines:
+            with self.subTest(line=line):
+                self.assertTrue(
+                    list(scanner.unsuppressed_hits(line, compiled, allowlist))
+                )
+        for benign in (
+            "version = 1",
+            "port = 8080",
+            "max_limit = 1000000",
+            'uid = "1234567"',
+            "chat_" + 'id = "chat-1"',
+        ):
+            with self.subTest(line=benign):
+                self.assertEqual(
+                    list(scanner.unsuppressed_hits(benign, compiled, allowlist)),
+                    [],
+                )
+
+
 class TrackedFileHygieneTests(unittest.TestCase):
     """(c) No host-absolute paths in tracked files.
 
