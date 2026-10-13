@@ -61,6 +61,87 @@ carries the rationale.
 | `tests/test_schemas.py` | `plugins/personal_memory/tests/test_schemas.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.schemas` |
 | `tests/test_ux.py` | `plugins/personal_memory/tests/test_ux.py` | `f0f6908` | adapted | same adaptation; dropped `test_register_exposes_bilingual_read_explain_tools`, `test_production_config_enables_personal_memory_toolset`; session-env-patched tool-handler members (`test_list_personal_memories_localizes_summaries`, `test_explain_why_remembered_localizes_narrative`, `test_cross_tenant_list_and_explain_fail_closed`, `test_invalid_language_raises_validation_error`) adapted to direct owner-flow calls with the explicit actor |
 | `tests/test_api_surface.py` | — (new) | — | added | exercises every `__init__` export: resolves each `__all__` name, inspects callables, asserts `personal_memory_confirm` exists in `TOOL_SCHEMAS` taking only `nonce`, runs one end-to-end owner flow incl. the confirm-gate consume path |
+| `tests/test_package_metadata.py` | — (new) | — | added | package metadata smoke test created in T1 (dist name, `__version__`, LICENSE holder); T6 removed its `src/` `sys.path` fallback (PH1-F-05) — the install-dependent members are gated on `_dist_installed()` so a bare checkout reports honest skips and a broken install cannot look green |
+| `tests/test_tool_surface.py` | `plugins/personal_memory/tests/test_tools.py` | `f0f6908` | adapted | folds the source `tools.py` coverage onto the standalone API surface (the host `handle_*` wrappers stay in Hermes); see T6 notes for the member map |
+| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery |
+| `tools/hygiene_scan.py` | — (new) | — | added | repo hygiene scanner (tracked-file scan for host-coupling markers, host paths, secret shapes); created in T1 so the CI scan stays green from PH-2 |
+| `tools/hygiene_allowlist.txt` | — (new) | — | added | allowlist for the intentional retained markers listed in the table below |
+| `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11) |
+| `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
+| `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`) |
+| `LICENSE` | — (new) | — | added | MIT license, holder `samohod4ik` |
+| `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
+| `README.ru.md` | — (new) | — | added | RU README stub (T1; mirror lands in T11) |
+| `.gitignore` | — (new) | — | added | repo baseline file extended in T1 with extraction ignores (`.delivery/`, `.env*`, `*.db`, `.venv`, `bench/results/`) |
+
+### Source files intentionally not ported
+
+Every `f0f6908` source file with no counterpart in this package is listed
+below. Host-coupled modules and their tests stay in Hermes; the boundary
+rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
+
+| Source path | Status | Reason |
+| --- | --- | --- |
+| `plugins/personal_memory/tools.py` | not-ported | host `handle_*` wrappers that derive the Actor from the host session context; coverage folded into `tests/test_tool_surface.py` against the standalone API — the wrappers themselves stay in Hermes |
+| `plugins/personal_memory/inject.py` | not-ported | session-context injection hook; stays in Hermes |
+| `plugins/personal_memory/miniapp_contract.py` | not-ported | mini app contract layer; stays in Hermes |
+| `plugins/personal_memory/miniapp_handlers.py` | not-ported | mini app HTTP handlers; stays in Hermes |
+| `plugins/personal_memory/night_cycle1_tool_descriptions.py` | not-ported | night-cycle tool descriptions; stays in Hermes |
+| `plugins/personal_memory/peer_import.py` | not-ported | peer-memory import; stays in Hermes |
+| `plugins/personal_memory/adapters/` (`travel.py`, `travel_compute_bridge.py`) | not-ported | travel-journal adapters; stays in Hermes |
+| `plugins/personal_memory/plugin.yaml` | not-ported | host plugin manifest; stays in Hermes |
+| `plugins/personal_memory/spikes/` | not-ported | sqlcipher compatibility spike; stays in Hermes |
+| `plugins/personal_memory/tests/test_plugin_load.py` | not-ported | plugin `register()`/manifest loading; stays in Hermes |
+| `plugins/personal_memory/tests/test_disabled_rollout.py` | not-ported | rollout-flag gating; stays in Hermes |
+| `plugins/personal_memory/tests/test_cycle1_tool_descriptions.py` | not-ported | night-cycle tool descriptions; stays in Hermes |
+| `plugins/personal_memory/tests/test_miniapp_api.py` | not-ported | mini app API; stays in Hermes |
+| `plugins/personal_memory/tests/test_miniapp_contract.py` | not-ported | mini app contract; stays in Hermes |
+| `plugins/personal_memory/tests/test_miniapp_handlers.py` | not-ported | mini app handlers; stays in Hermes |
+| `plugins/personal_memory/tests/test_travel_adapter.py` | not-ported | travel adapter; stays in Hermes |
+| `plugins/personal_memory/tests/test_travel_compute_bridge.py` | not-ported | travel compute bridge; stays in Hermes |
+| `plugins/personal_memory/tests/test_r1_inject_acl.py` | not-ported | inject-ACL R1 test; stays in Hermes |
+| `plugins/personal_memory/tests/test_inject.py` | not-ported | inject hook coverage; stays in Hermes |
+| `plugins/personal_memory/tests/test_live_handler_payloads.py` | not-ported | live handler payload shapes; stays in Hermes |
+| `plugins/personal_memory/tests/spikes/test_sqlcipher_spike.py` | not-ported | sqlcipher spike fixture; stays in Hermes |
+
+### T6 notes
+
+- `tests/test_tool_surface.py` member map vs source
+  `plugins/personal_memory/tests/test_tools.py` (2 source members):
+  `test_tools_use_session_actor_and_ignore_tenant_selectors` →
+  `test_owner_tools_are_bound_to_actor_not_callable_selectors` (fixture and
+  payload assertions preserved verbatim) plus
+  `test_owner_flows_take_explicit_actor_without_selector_params`,
+  `test_selector_kwargs_are_unpassable` and
+  `test_tool_schemas_have_no_identity_selectors` — the source proved forged
+  tenant/user/platform kwargs were ignored; the standalone signatures and
+  schemas make them unpassable, a strictly stronger guarantee.
+  `test_toolset_is_personal_memory_and_enabled_in_telegram` →
+  `test_source_tool_names_have_schema_and_callable` +
+  `test_every_tool_schema_maps_to_public_surface` for the surface-name
+  coverage; its `register()`/`config.yaml` assertions stay in Hermes with
+  the plugin registry.
+- New tool-surface members with no source counterpart:
+  `test_destructive_schemas_have_no_confirm_boolean` (absorbs the
+  `test_schemas_have_no_destructive_boolean` intent dropped from
+  `test_confirmation.py` in T4),
+  `test_confirm_schema_takes_only_nonce_and_matches_consume_path`,
+  `test_destructive_tools_produce_previews_only`,
+  `test_two_phase_confirm_executes_bound_erasure`,
+  `test_failed_send_enables_no_nonce` — they pin the I-SCHEMAS +
+  two-phase-confirm contract the source covered through
+  `test_trusted_delete.py` members.
+- `tests/test_ci_requirements.py` is an adaptation-in-name only: the
+  source file checked `requirements-ci.in`/`.txt` pins; the dependency
+  floor `cryptography>=42` lives in `pyproject.toml` and the file now
+  guards the extraction layout instead (provenance completeness, `src/`
+  hygiene, tracked-file host-path scan).
+- PH1-F-05 fix: `tests/test_package_metadata.py` no longer falls back to
+  a `src/` `sys.path` shim; the three install-dependent members are gated
+  on `_dist_installed()`.
+- PH1-F-04 fix: file-map rows added for all new tracked files (status
+  `added`) and the not-ported source inventory is now explicit in the
+  table above.
 
 ### T3 notes
 
@@ -189,6 +270,7 @@ allowlisted in `tools/hygiene_allowlist.txt`.
 | `plugins.personal-memory*` | logger names in ported modules | log-source parity with the source so operators can correlate logs |
 | `telegram:` | `types.py` `external_ref` label shape | record-format compatibility for refs minted by the source |
 | `hermes-pm-bench-` | bench runner temp-dir prefix | retained in ported bench code; cosmetic, no functional coupling |
+| `hermes-pm-*` | `tests/` `TemporaryDirectory` prefixes | verbatim source test-fixture strings; cosmetic marker, not a scan hit |
 | `PRODUCTION_MARKERS` | bench self-test fixture | fixture strings that intentionally embed production-path markers to assert they never leak into outputs |
 | `OPAQUE_SECRET` | `tests/test_validation.py` | synthetic non-credential fixture exercising opaque-secret detection in the ported validation tests; allowlisted so the scanner does not flag its `SECRET = "…"` shape |
 | `dropped source env fallback` | this file (File map, `store.py` row) | doc-only mention of the removed `HERMES_HOME`/`F:\Hermes` default inside the sanctioned-delta record; allowlisted phrase, never present in code |
