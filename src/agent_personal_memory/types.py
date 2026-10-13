@@ -1,4 +1,4 @@
-"""Typed identities for the personal-memory plugin."""
+"""Typed identities for the agent-personal-memory package."""
 
 from __future__ import annotations
 

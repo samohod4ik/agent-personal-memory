@@ -11,10 +11,10 @@ carries the rationale.
 
 | File | Source path | Source SHA | Status (ported/adapted/dropped) | Sanctioned deltas |
 | --- | --- | --- | --- | --- |
-| `src/agent_personal_memory/types.py` | `plugins/personal_memory/types.py` | `f0f6908` | ported | none — verbatim (retains `telegram:` external_ref label shape) |
+| `src/agent_personal_memory/types.py` | `plugins/personal_memory/types.py` | `f0f6908` | ported | doc-only delta (PH1-F-06, T11): module docstring reworded host-neutrally — "the personal-memory plugin" → "the agent-personal-memory package"; code verbatim (retains `telegram:` external_ref label shape) |
 | `src/agent_personal_memory/lifecycle.py` | `plugins/personal_memory/lifecycle.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/crypto.py` | `plugins/personal_memory/crypto.py` | `f0f6908` | ported | none — verbatim (retains `hermes.personal_memory.lookup.v1` HKDF/AAD info string) |
-| `src/agent_personal_memory/store.py` | `plugins/personal_memory/store.py` | `f0f6908` | adapted | `default_data_dir` resolution changed to explicit arg → `PERSONAL_MEMORY_DATA_DIR` → `~/.agent-personal-memory`; dropped source env fallback (`HERMES_HOME` → `F:\Hermes\data\personal-memory`); constructor signature widened to `data_dir: str \| Path \| None`; logger name `plugins.personal-memory` retained verbatim |
+| `src/agent_personal_memory/store.py` | `plugins/personal_memory/store.py` | `f0f6908` | adapted | `default_data_dir` resolution changed to explicit arg → `PERSONAL_MEMORY_DATA_DIR` → `~/.agent-personal-memory`; dropped source env fallback (`HERMES_HOME` → `F:\Hermes\data\personal-memory`); constructor signature widened to `data_dir: str \| Path \| None`; logger name `plugins.personal-memory` retained verbatim; PH1-F-06 doc-only delta (T11): module docstring "the disabled personal-memory plugin" → "the agent-personal-memory store" and `SchemaVersionError` docstring "this plugin build" → "this package build" |
 | `src/agent_personal_memory/validation.py` | `plugins/personal_memory/validation.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/erasure.py` | `plugins/personal_memory/erasure.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/fts_index.py` | `plugins/personal_memory/fts_index.py` | `f0f6908` | ported | none — verbatim full module (T2 had landed only the erasure-side helpers; T3 added `build_claim_fts_index`/`fts_index_present`/`rank_claims_fts` verbatim, so the file is now byte-identical to the source; tenant scope stays a `tenant_id = ?` predicate inside the FTS query plus authorized-candidate post-checks, exactly as source) |
@@ -63,16 +63,19 @@ carries the rationale.
 | `tests/test_api_surface.py` | — (new) | — | added | exercises every `__init__` export: resolves each `__all__` name, inspects callables, asserts `personal_memory_confirm` exists in `TOOL_SCHEMAS` taking only `nonce`, runs one end-to-end owner flow incl. the confirm-gate consume path |
 | `tests/test_package_metadata.py` | — (new) | — | added | package metadata smoke test created in T1 (dist name, `__version__`, LICENSE holder); T6 removed its `src/` `sys.path` fallback (PH1-F-05) — the install-dependent members are gated on `_dist_installed()` so a bare checkout reports honest skips and a broken install cannot look green |
 | `tests/test_tool_surface.py` | `plugins/personal_memory/tests/test_tools.py` | `f0f6908` | adapted | folds the source `tools.py` coverage onto the standalone API surface (the host `handle_*` wrappers stay in Hermes); see T6 notes for the member map |
-| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery |
+| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery; T11 hardening: provenance rows are matched by first-cell/exact backticked file stem (not substring, PH2-F-02), every `git ls-files` entry must have a first-cell row (PH2-F-01), `_REQUIRED_NEW_FILE_ROWS` covers ci.yml/SKILL.md/threat-model/quickstart test, and a meta assert pins the `cryptography>=42` floor in `pyproject.toml` (PH2-F-08) |
 | `tools/hygiene_scan.py` | — (new) | — | added | repo hygiene scanner (tracked-file scan for host-coupling markers, host paths, secret shapes); created in T1 so the CI scan stays green from PH-2 |
 | `tools/hygiene_allowlist.txt` | — (new) | — | added | allowlist for the intentional retained markers listed in the table below |
-| `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11) |
+| `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11 with the confirm-gate split decision and the MCP command-mapping note) |
 | `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
 | `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` — floor raised to `mcp>=1.28.1` in PH-3 r1 (past the CVE-affected 1.x releases) — and adds the `agent-personal-memory-mcp` console script |
 | `skills/agent-personal-memory/SKILL.md` | — (new) | — | added | new standalone Agent Skill doc (agentskills.io frontmatter): remember/forget policy, candidate→confirmed lifecycle, privacy do/don'ts, the two-phase confirm rule incl. the MCP operator outbox flow (`<data_dir>/confirmations.jsonl` + stderr → `personal_memory_confirm`), and minimal library/MCP embed examples; all API/tool names mirror `__init__.py`/`TOOL_SCHEMAS` verbatim |
 | `LICENSE` | — (new) | — | added | MIT license, holder `samohod4ik` |
-| `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
-| `README.ru.md` | — (new) | — | added | RU README stub (T1; mirror lands in T11) |
+| `README.md` | — (new) | — | added | canonical README (T1 stub, T11 final): what-it-is, install, executable quickstart (asserted verbatim by `tests/test_readme_quickstart.py`), API map, MCP section incl. the operator outbox flow, honest differentiation vs Mem0/Letta/basic-memory, security notes |
+| `README.ru.md` | — (new) | — | added | faithful RU mirror of README.md (T1 stub, T11 final); the fenced python quickstart block is executed by `tests/test_readme_quickstart.py` |
+| `docs/threat-model.md` | — (new) | — | added | threat model (T11): assets, actors, trust boundaries, at-rest-only crypto scope, KEK custody, erasure guarantees vs. backup/OS-copy limits, confirm-gate rationale, supply-chain note, honest limits |
+| `tests/test_readme_quickstart.py` | — (new) | — | added | extracts the fenced python quickstart blocks from README.md and README.ru.md and executes them verbatim against temp stores (T11) |
+| `.github/workflows/ci.yml` | — (new) | — | added | CI matrix ubuntu+windows × Python 3.10/3.12: `pip install ".[mcp]"`, unittest discover over `tests/` and `bench/`, bench `component --repeats 1`, `tools/hygiene_scan.py` (T8; T9 switched the install step to the `[mcp]` extra — PH3-F-06) |
 | `.gitignore` | — (new) | — | added | repo baseline file extended in T1 with extraction ignores (`.delivery/`, `.env*`, `*.db`, `.venv`, `bench/results/`) |
 | `src/agent_personal_memory/mcp.py` | — (new) | — | added | new standalone surface, no source counterpart; wraps the `confirmation.py` gate — thin stdio MCP facade binding the startup-provisioned Actor/SessionBinding into every `tools/call` (tool args carry no identity fields; extra keys rejected); destructive tools deliver the nonce-bearing preview to an operator-only outbox `<data_dir>/confirmations.jsonl` + stderr notice via `make_outbox_send`, then `personal_memory_confirm` consumes it against the fixed binding/store; `mcp` SDK imported lazily and adapted across the 1.x decorator and 2.x constructor APIs |
 | `tests/test_mcp_stdio.py` | — (new) | — | added | always-on pure-Python members (flag/binding validation, outbox transport, dispatch wiring, preview→outbox→confirm nonce flow, wrong-nonce/binding-mismatch/extra-key denials, failed-send fail-closed); stdio JSON-RPC subprocess members gated on the installed `[mcp]` extra |
@@ -129,9 +132,10 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   (`diff` clean); the corpus holds exactly 10 cases and `load_corpus`
   rejects every `cases/` stub, so the falsifier pack stays outside the
   10-case denominator.
-- `run_bench.py` deltas vs source: two removed lines (`PLUGINS_ROOT`
-  shim), one repointed constant (`REPO_ROOT`), four rewired import lines,
-  one reworded docstring line. All seeding, query, scoring, CLI and
+- `run_bench.py` deltas vs source: three removed lines (the `PLUGINS_ROOT`
+  constant plus its `if`-guard/`sys.path.insert` pair — PH2-F-07 corrected
+  the count), one repointed constant (`REPO_ROOT`), four rewired import
+  lines, one reworded docstring line. All seeding, query, scoring, CLI and
   output logic is verbatim; `component --repeats 1` yields 10/10.
 - With `bench/QUALITY_CRITERIA.md` present, the `skipUnless` guard in
   `tests/test_score_locality.py` self-activated: the member now runs and
@@ -300,7 +304,9 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   stderr. Tool results are scrubbed of nonce-shaped keys defensively; the
   nonce can only reach `personal_memory_confirm` via the operator reading
   the outbox, preserving the two-phase guarantee end to end.
-- `mcp` stays an optional extra (`mcp>=1.12`). `build_sdk_server` adapts to
+- `mcp` stays an optional extra (`mcp>=1.28.1` — floor raised in the PH-3
+  r1 fix past the CVE-affected 1.x releases; PH3-R2-01 corrected the stale
+  `>=1.12` mention here). `build_sdk_server` adapts to
   both SDK generations: 1.x decorator registration
   (`@server.list_tools()`/`@server.call_tool()`, exceptions → isError) and
   2.x constructor handlers (`on_list_tools`/`on_call_tool` returning
@@ -347,6 +353,32 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   `pip install ".[mcp]"` install step) was modified in T9 outside its
   declared modify paths (`pyproject.toml`, `docs/PROVENANCE.md`); noted
   here, no code change required.
+
+### T11 notes
+
+- New files: `README.md`/`README.ru.md` final content,
+  `docs/threat-model.md`, `tests/test_readme_quickstart.py` — all carry
+  `added` rows in the file map above.
+- PH1-F-06 resolved: the host-era "plugin" docstrings in `store.py`
+  (module + `SchemaVersionError`) and `types.py` (module) were reworded to
+  standalone-package wording. Doc-only delta, recorded per-file above; the
+  retained `plugins.personal-memory` logger name is untouched (intentional
+  marker, see the table below).
+- PH2-F-01 resolved: file-map rows added for `.github/workflows/ci.yml`,
+  `docs/threat-model.md` and `tests/test_readme_quickstart.py`
+  (`skills/agent-personal-memory/SKILL.md` already had one), and the
+  meta-test now requires a first-cell row for **every** `git ls-files`
+  entry, so future omissions fail CI instead of drifting.
+- PH2-F-02 resolved: `test_ci_requirements.py` matches provenance rows by
+  first-cell path and by exact backticked `*.py` stem — `test_export` can
+  no longer be satisfied by `test_export_ux` text, and a path mentioned in
+  T-notes prose no longer counts as a row.
+- PH2-F-07 resolved: the T7 note now says three removed lines
+  (`PLUGINS_ROOT` + `if` + `sys.path.insert`), matching the actual diff.
+- PH2-F-08 resolved: `PackagingFloorTests` asserts the `cryptography>=42`
+  floor in `pyproject.toml`.
+- PH3-R2-01 resolved: the stale `mcp>=1.12` mention in the T9 notes now
+  reads `mcp>=1.28.1`, matching `pyproject.toml`.
 
 ### T2 notes
 
