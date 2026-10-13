@@ -140,6 +140,17 @@ the `/memory_confirm <nonce>` line inside `body`, and calls the
 `personal_memory_confirm` tool with that nonce. The model may call
 `personal_memory_confirm`, but it cannot mint or guess a valid nonce.
 
+Command mapping under MCP: the preview `confirmation`/`delete_command`
+fields and the outbox `body` are ported verbatim from the library, so they
+still mention `/memory_delete <request_id>` and
+`/memory_cancel <request_id>` — source-host commands that do not exist on
+this MCP surface. The mapping is: `/memory_delete <request_id>` ("open the
+exact preview") is already done — the outbox line IS the delivery, and the
+operator reads the nonce from `<data_dir>/confirmations.jsonl` and calls
+`personal_memory_confirm`; `/memory_cancel <request_id>` maps to simply
+ignoring the preview — the nonce expires on its own via the registry TTL
+(600 s).
+
 ## Embedding the library
 
 ```python
