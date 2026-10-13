@@ -69,6 +69,7 @@ carries the rationale.
 | `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11) |
 | `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
 | `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` and adds the `agent-personal-memory-mcp` console script |
+| `skills/agent-personal-memory/SKILL.md` | — (new) | — | added | new standalone Agent Skill doc (agentskills.io frontmatter): remember/forget policy, candidate→confirmed lifecycle, privacy do/don'ts, the two-phase confirm rule incl. the MCP operator outbox flow (`<data_dir>/confirmations.jsonl` + stderr → `personal_memory_confirm`), and minimal library/MCP embed examples; all API/tool names mirror `__init__.py`/`TOOL_SCHEMAS` verbatim |
 | `LICENSE` | — (new) | — | added | MIT license, holder `samohod4ik` |
 | `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
 | `README.ru.md` | — (new) | — | added | RU README stub (T1; mirror lands in T11) |
