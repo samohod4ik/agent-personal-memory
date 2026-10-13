@@ -95,15 +95,20 @@ _HOST_PATH_PATTERNS = tuple(
 # New tracked files that must carry an added/adapted provenance row.
 _REQUIRED_NEW_FILE_ROWS = (
     ".gitignore",
+    ".github/workflows/ci.yml",
     "LICENSE",
     "README.md",
     "README.ru.md",
     "docs/PROVENANCE.md",
     "docs/adr/0002-core-boundary.md",
+    "docs/threat-model.md",
     "pyproject.toml",
+    "skills/agent-personal-memory/SKILL.md",
     "tests/test_api_surface.py",
     "tests/test_ci_requirements.py",
+    "tests/test_mcp_stdio.py",
     "tests/test_package_metadata.py",
+    "tests/test_readme_quickstart.py",
     "tests/test_tool_surface.py",
     "tools/hygiene_allowlist.txt",
     "tools/hygiene_scan.py",
@@ -166,6 +171,32 @@ def _provenance_rows(text: str) -> list[str]:
     return rows
 
 
+def _file_map_first_cells(text: str) -> set[str]:
+    """Exact backticked paths from each File-map row's first cell.
+
+    First-cell matching only: a path mentioned in free-text delta prose does
+    not satisfy a provenance row (PH2-F-02).
+    """
+    names: set[str] = set()
+    for row in _provenance_rows(text):
+        cells = row.split("|")
+        if len(cells) >= 3:
+            names.update(re.findall(r"`([^`]+)`", cells[1]))
+    return names
+
+
+# Backticked ``*.py`` paths named anywhere in a row (File or Source cell).
+_BACKTICKED_PY = re.compile(r"`([^`]+\.py)`")
+
+
+def _row_py_stems(row: str) -> set[str]:
+    """Exact ``*.py`` file stems named by the row — no substring matches."""
+    return {
+        name.rsplit("/", 1)[-1][: -len(".py")]
+        for name in _BACKTICKED_PY.findall(row)
+    }
+
+
 def _src_files() -> list[Path]:
     return sorted(SRC_ROOT.rglob("*.py"))
 
@@ -184,18 +215,31 @@ class ProvenanceCompletenessTests(unittest.TestCase):
     """(a) The file-for-file disposition table is complete."""
 
     def test_every_src_module_has_a_provenance_row(self) -> None:
-        text = PROVENANCE.read_text(encoding="utf-8")
+        first_cells = _file_map_first_cells(PROVENANCE.read_text(encoding="utf-8"))
         for path in _src_files():
             rel = path.relative_to(REPO_ROOT).as_posix()
             with self.subTest(file=rel):
-                self.assertIn(f"`{rel}`", text, f"{rel}: missing provenance row")
+                self.assertIn(rel, first_cells, f"{rel}: missing provenance row")
 
     def test_every_test_file_has_a_provenance_row(self) -> None:
-        text = PROVENANCE.read_text(encoding="utf-8")
+        first_cells = _file_map_first_cells(PROVENANCE.read_text(encoding="utf-8"))
         for path in sorted(TESTS_ROOT.glob("test_*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
             with self.subTest(file=rel):
-                self.assertIn(f"`{rel}`", text, f"{rel}: missing provenance row")
+                self.assertIn(rel, first_cells, f"{rel}: missing provenance row")
+
+    def test_every_tracked_file_has_a_provenance_row(self) -> None:
+        """Every ``git ls-files`` entry needs a first-cell File-map row.
+
+        The scanner's own file and the allowlist are excluded from
+        ``tracked_files``; both are covered by ``_REQUIRED_NEW_FILE_ROWS``.
+        """
+        scanner = _load_hygiene_scanner()
+        first_cells = _file_map_first_cells(PROVENANCE.read_text(encoding="utf-8"))
+        for path in scanner.tracked_files(REPO_ROOT):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            with self.subTest(file=rel):
+                self.assertIn(rel, first_cells, f"{rel}: missing provenance row")
 
     def test_required_new_files_have_added_or_adapted_rows(self) -> None:
         rows = _provenance_rows(PROVENANCE.read_text(encoding="utf-8"))
@@ -216,7 +260,9 @@ class ProvenanceCompletenessTests(unittest.TestCase):
         rows = _provenance_rows(text)
         for stem in _SOURCE_TEST_STEMS:
             with self.subTest(source_test=stem):
-                matching = [row for row in rows if stem in row]
+                # Exact backticked-file-stem match: ``test_export`` must not
+                # be satisfied by a ``test_export_ux.py`` row (PH2-F-02).
+                matching = [row for row in rows if stem in _row_py_stems(row)]
                 self.assertTrue(matching, f"{stem}: no provenance row")
                 self.assertTrue(
                     any(_STATUS_RE.search(row) for row in matching),
@@ -286,6 +332,23 @@ class SrcHygieneTests(unittest.TestCase):
                 self.assertIsNone(
                     _ENV_TOUCH.search(line), f"{rel}:{lineno}: env access"
                 )
+
+
+class PackagingFloorTests(unittest.TestCase):
+    """(d) pyproject.toml keeps the declared dependency floor (PH2-F-08).
+
+    The source file this meta-test descends from asserted the host CI
+    requirements lock pinned ``cryptography``; the standalone floor lives in
+    ``pyproject.toml`` instead, so it is asserted here directly.
+    """
+
+    def test_pyproject_pins_cryptography_floor(self) -> None:
+        text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r"(?ms)^dependencies\s*=\s*\[(.*?)\]", text)
+        self.assertIsNotNone(
+            match, "pyproject.toml: [project] dependencies block missing"
+        )
+        self.assertIn('"cryptography>=42"', match.group(1))
 
 
 class TrackedFileHygieneTests(unittest.TestCase):

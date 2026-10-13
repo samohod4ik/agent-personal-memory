@@ -1,4 +1,4 @@
-"""SQLite schema foundation for the disabled personal-memory plugin."""
+"""SQLite schema foundation for the agent-personal-memory store."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ AUDIT_REASONS = frozenset(
 
 
 class SchemaVersionError(RuntimeError):
-    """Raised when the on-disk schema is newer than this plugin build."""
+    """Raised when the on-disk schema is newer than this package build."""
 
 
 class NotFoundError(LookupError):

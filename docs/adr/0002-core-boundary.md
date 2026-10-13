@@ -1,6 +1,6 @@
 # ADR-0002: Core extraction boundary for agent-personal-memory
 
-- Status: Accepted-in-plan (drafted in PH-1 T1; to be finalized in PH-4)
+- Status: Accepted (drafted in PH-1 T1; finalized in PH-4 T11)
 - Date: 2026-10-13
 - Source: Hermes `plugins/personal_memory` snapshot `origin/main@f0f6908` (read-only)
 
@@ -63,6 +63,21 @@ event trust checks, adapter delivery, command handler stubs. It is the
 host's job to parse user commands, build the `SessionBinding`, inject a
 `send` that can reach only the authenticated user channel, and call
 `consume_confirm`/`consume_delete_request` on success.
+
+**MCP command mapping.** The ported preview texts still mention the source
+host's chat commands (`/memory_delete <request_id>`,
+`/memory_confirm <nonce>`, `/memory_cancel <request_id>`). On the MCP
+surface these commands do not exist; the operator outbox flow replaces
+them: the nonce-bearing preview text is appended to
+`<data_dir>/confirmations.jsonl` (plus a nonce-free stderr notice) instead
+of being opened via `/memory_delete`, the operator reads the nonce from the
+outbox and supplies it to the `personal_memory_confirm` tool (the named
+consume surface, nonce-only argument), and `/memory_cancel` maps to simply
+ignoring the preview — the nonce expires via the registry TTL (600 s). The
+mapping is documented for agents in `skills/agent-personal-memory/SKILL.md`.
+Keeping the ported strings verbatim was deliberate: changing them would
+break the ported wording tests and the canonical preview text is the exact
+payload the operator confirms; only the transport differs.
 
 Cross-cutting rules:
 
