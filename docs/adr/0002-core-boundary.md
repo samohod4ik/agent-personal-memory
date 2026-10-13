@@ -31,6 +31,39 @@ registration, no host network or messaging surfaces.
   preview/consume registry and session binding, with host delivery replaced
   by an injected `send(text) -> bool` transport supplied by the caller.
 
+### Confirm-gate split (`trusted_delete` → `confirmation`)
+
+The source `trusted_delete.py` couples the confirm-gate core to the host in
+two places: session resolution (env lookups and inbound-event/session-store
+introspection) and transport delivery (adapter lookup, metadata plumbing,
+async send callbacks). Only the gate core crosses the boundary:
+
+- `SessionBinding` is constructed by the **host** and passed in explicitly;
+  the library never resolves a session itself. The source's env-based and
+  event-based binding builders stay in Hermes.
+- Delivery is an injected ``send(text) -> bool`` callable supplied per
+  `open_preview` call. The two-phase nonce discipline is preserved exactly:
+  `create_delete_preview` returns only non-authorizing fields (`request_id`,
+  matched items, human-readable text — never a nonce); the nonce is
+  generated inside `DeleteRegistry.prepare_preview`, embedded solely in the
+  `send()` payload text, and registered via `mark_preview_sent` only after
+  `send()` returns truthy. A raised exception, a falsy return, or a
+  coroutine return (an `async def` transport cannot confirm synchronous
+  delivery) is a failed send and leaves no usable nonce.
+- `consume_delete_request` and `create_delete_preview` require an explicit
+  `store` argument; the source's default-constructed store is removed so a
+  consume can never silently run against a different database than the
+  preview's.
+- Registry lifecycle is explicit: the module exposes `REGISTRY` plus a
+  `reset_registry()` test/host hook, and `DeleteRegistry` takes an
+  injectable `monotonic` clock, TTL and bound (`max_items`).
+
+The inbound-command seam stays in Hermes: `pre_gateway_dispatch`, inbound
+event trust checks, adapter delivery, command handler stubs. It is the
+host's job to parse user commands, build the `SessionBinding`, inject a
+`send` that can reach only the authenticated user channel, and call
+`consume_confirm`/`consume_delete_request` on success.
+
 Cross-cutting rules:
 
 - The actor is an explicit argument (`Actor`); nothing inside the library
@@ -52,6 +85,7 @@ The following surfaces stay in Hermes and are not extracted:
 | --- | --- |
 | Plugin registration and `plugin.yaml` manifest | host plugin lifecycle; stays in Hermes |
 | Host gateway tools / `session_context` wiring | gateway internals; stays in Hermes |
+| `trusted_delete` inbound seam (dispatch hook, inbound event trust, adapter delivery, env session lookup) | host session/transport coupling; stays in Hermes |
 | `inject.py` auto-inject hooks | host prompt-assembly hook; stays in Hermes |
 | `learn.py` hook tail | host hook coupling; stays in Hermes |
 | `adapters/travel`, `travel_compute` | travel-domain feature; stays in Hermes |
