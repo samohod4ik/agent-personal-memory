@@ -15,7 +15,10 @@ authors = [
 dependencies = ["cryptography>=42"]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.9"]
+mcp = ["mcp>=1.12"]
+
+[project.scripts]
+agent-personal-memory-mcp = "agent_personal_memory.mcp:main"
 
 [project.urls]
 Homepage = "https://github.com/samohod4ik/agent-personal-memory"

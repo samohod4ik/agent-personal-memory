@@ -30,10 +30,10 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
-      # Note: the optional [mcp] extra is intentionally not installed here yet;
-      # it lands with T9 (thin MCP facade) in PH-3.
+      # The [mcp] extra is installed so the MCP stdio subprocess test in
+      # tests/test_mcp_stdio.py runs the real server instead of skipping.
       - name: Install package
-        run: pip install .
+        run: pip install ".[mcp]"
 
       - name: Run unit tests
         run: python -m unittest discover -s tests

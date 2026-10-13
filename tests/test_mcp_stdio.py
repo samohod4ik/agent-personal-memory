@@ -1,0 +1,669 @@
+"""Tests for the MCP stdio facade (``agent_personal_memory.mcp``).
+
+Pure-Python members (argument parsing, the outbox send transport, dispatch
+wiring, and the confirm-gate nonce flow) always run. The subprocess
+JSON-RPC members are gated on the optional ``mcp`` extra being installed.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import queue
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import agent_personal_memory as apm
+from agent_personal_memory import mcp as apm_mcp
+from agent_personal_memory.validation import ValidationError
+
+try:
+    from mcp.types import LATEST_PROTOCOL_VERSION as _PROTOCOL_VERSION
+
+    _SDK_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the optional extra
+    _SDK_AVAILABLE = False
+
+_PLATFORM = "test-platform"
+_USER_ID = "u41"
+_OTHER_USER_ID = "u99"
+_SESS_KEY = "sk-1"
+_SESS_ID = "sess-1"
+_CHAT_ID = "chat-1"
+_OTHER_CHAT_ID = "chat-9"
+
+# Property names that would let a caller smuggle identity/binding selectors.
+_IDENTITY_PROPS = frozenset(
+    {
+        "actor",
+        "actor_platform",
+        "actor_user_id",
+        "platform",
+        "user_id",
+        "tenant_id",
+        "session_key",
+        "session_id",
+        "chat_id",
+        "thread_id",
+        "profile",
+        "session_binding",
+    }
+)
+
+_NONCE_RE = re.compile(r"/memory_confirm\s+(\S+)")
+
+
+def _argv(data_dir: str, drop: str | None = None, **overrides: str) -> list[str]:
+    mapping = {
+        "--actor-platform": _PLATFORM,
+        "--actor-user-id": _USER_ID,
+        "--session-key": _SESS_KEY,
+        "--session-id": _SESS_ID,
+        "--chat-id": _CHAT_ID,
+        "--data-dir": data_dir,
+    }
+    for name, value in overrides.items():
+        mapping["--" + name.replace("_", "-")] = value
+    args: list[str] = []
+    for flag, value in mapping.items():
+        if flag != drop:
+            args += [flag, value]
+    return args
+
+
+def _binding(**overrides: str) -> apm.SessionBinding:
+    values = {
+        "platform": _PLATFORM,
+        "user_id": _USER_ID,
+        "session_key": _SESS_KEY,
+        "session_id": _SESS_ID,
+        "chat_id": _CHAT_ID,
+        "thread_id": "",
+        "profile": "",
+        "display_name": "",
+    }
+    values.update(overrides)
+    return apm.SessionBinding(**values)  # type: ignore[arg-type]
+
+
+def _nonce_from_outbox(outbox: Path) -> str:
+    lines = outbox.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        raise AssertionError(f"outbox {outbox} is empty")
+    record = json.loads(lines[-1])
+    match = _NONCE_RE.search(record["body"])
+    if match is None:
+        raise AssertionError(f"no confirm nonce in outbox body: {record}")
+    return match.group(1)
+
+
+class StartupConfigTests(unittest.TestCase):
+    """Startup flags provision the fixed binding or fail fast."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = self._tmp.name
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_full_flags_produce_fixed_binding(self) -> None:
+        args = apm_mcp.build_parser().parse_args(_argv(self.data_dir))
+        binding = apm_mcp.build_binding(args)
+        self.assertEqual(binding.platform, _PLATFORM)
+        self.assertEqual(binding.user_id, _USER_ID)
+        self.assertEqual(binding.session_key, _SESS_KEY)
+        self.assertEqual(binding.session_id, _SESS_ID)
+        self.assertEqual(binding.chat_id, _CHAT_ID)
+        actor = binding.actor()
+        self.assertEqual(actor.platform, _PLATFORM)
+        self.assertEqual(actor.user_id, _USER_ID)
+
+    def test_missing_binding_flag_fails_fast(self) -> None:
+        for flag in (
+            "--actor-platform",
+            "--actor-user-id",
+            "--session-key",
+            "--session-id",
+            "--chat-id",
+        ):
+            with self.subTest(missing=flag):
+                args = apm_mcp.build_parser().parse_args(
+                    _argv(self.data_dir, drop=flag)
+                )
+                with self.assertRaises(ValueError) as raised:
+                    apm_mcp.build_binding(args)
+                self.assertIn(flag, str(raised.exception))
+
+    def test_no_flags_fails_fast(self) -> None:
+        args = apm_mcp.build_parser().parse_args(["--data-dir", self.data_dir])
+        with self.assertRaises(ValueError) as raised:
+            apm_mcp.build_binding(args)
+        self.assertIn("--actor-platform", str(raised.exception))
+
+    def test_invalid_user_id_fails_fast(self) -> None:
+        for bad in ("0", "unknown", "none"):
+            with self.subTest(user_id=bad):
+                args = apm_mcp.build_parser().parse_args(
+                    _argv(self.data_dir, actor_user_id=bad)
+                )
+                with self.assertRaises(ValueError):
+                    apm_mcp.build_binding(args)
+
+    def test_build_surface_wires_store_and_outbox(self) -> None:
+        args = apm_mcp.build_parser().parse_args(_argv(self.data_dir))
+        surface = apm_mcp.build_surface(args)
+        self.assertEqual(surface.store.data_dir, Path(self.data_dir))
+        self.assertEqual(
+            surface.outbox_path, Path(self.data_dir) / apm_mcp.OUTBOX_NAME
+        )
+        self.assertEqual(surface.binding.user_id, _USER_ID)
+        self.assertEqual(surface.actor.user_id, _USER_ID)
+
+    def test_main_reports_missing_extra(self) -> None:
+        stderr = io.StringIO()
+        with (
+            contextlib.redirect_stderr(stderr),
+            patch.object(
+                apm_mcp, "_load_sdk", side_effect=ImportError("no mcp")
+            ),
+        ):
+            rc = apm_mcp.main(_argv(self.data_dir))
+        self.assertEqual(rc, 2)
+        self.assertIn("agent-personal-memory[mcp]", stderr.getvalue())
+
+    def test_main_fails_without_binding_flags(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            try:
+                rc = apm_mcp.main(["--data-dir", self.data_dir])
+            except SystemExit as exc:
+                rc = exc.code
+        self.assertNotEqual(rc, 0)
+        if _SDK_AVAILABLE:
+            self.assertIn("missing required startup flag", stderr.getvalue())
+
+
+class OutboxSendTests(unittest.TestCase):
+    """The confirm-gate send transport: JSONL outbox + stderr notice."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name)
+        self.outbox = self.data_dir / apm_mcp.OUTBOX_NAME
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_send_appends_jsonl_and_notice_hides_body(self) -> None:
+        err = io.StringIO()
+        send = apm_mcp.make_outbox_send(
+            self.outbox, request_id="r-1", stderr=err
+        )
+        self.assertTrue(send("preview body\nConfirm deletion: /memory_confirm nXYZ"))
+        lines = self.outbox.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual(record["request_id"], "r-1")
+        self.assertIn("/memory_confirm nXYZ", record["body"])
+        self.assertIn("ts", record)
+        # stderr gets a short notice, never the nonce-bearing body.
+        self.assertIn(apm_mcp.OUTBOX_NAME, err.getvalue())
+        self.assertIn("r-1", err.getvalue())
+        self.assertNotIn("nXYZ", err.getvalue())
+
+    def test_send_appends_multiple_lines(self) -> None:
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=io.StringIO())
+        send("first")
+        send("second")
+        lines = self.outbox.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertNotIn("request_id", json.loads(lines[0]))
+
+    def test_send_failure_propagates(self) -> None:
+        blocked = self.data_dir / "blocked"
+        blocked.mkdir()
+        send = apm_mcp.make_outbox_send(blocked, stderr=io.StringIO())
+        with self.assertRaises(OSError):
+            send("x")
+
+
+class DispatchTests(unittest.TestCase):
+    """In-process dispatch wiring against a real store + fixed binding."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name)
+        self.store = apm.PersonalMemoryStore(data_dir=self.data_dir)
+        self.binding = _binding()
+        self.err = io.StringIO()
+        self.surface = apm_mcp.McpToolSurface(
+            actor=self.binding.actor(),
+            binding=self.binding,
+            store=self.store,
+            outbox_path=self.data_dir / apm_mcp.OUTBOX_NAME,
+            stderr=self.err,
+        )
+        apm.reset_registry()
+
+    def tearDown(self) -> None:
+        apm.reset_registry()
+        self._tmp.cleanup()
+
+    def _outbox(self) -> Path:
+        return self.data_dir / apm_mcp.OUTBOX_NAME
+
+    def _remember(self, content: str) -> str:
+        created = self.surface.call_tool(
+            "remember_personal_insight", {"content": content}
+        )
+        return str(created["claim_id"])
+
+    def test_tool_list_matches_canonical_surface(self) -> None:
+        tools = self.surface.tool_schemas()
+        self.assertEqual(len(tools), 21)
+        self.assertEqual(
+            [t["name"] for t in tools], list(apm.TOOL_SCHEMAS.keys())
+        )
+        for tool in tools:
+            schema = apm.TOOL_SCHEMAS[tool["name"]]
+            self.assertEqual(tool["description"], schema["description"])
+            self.assertEqual(tool["inputSchema"], schema["parameters"])
+            props = set(tool["inputSchema"].get("properties", {}))
+            self.assertFalse(props & _IDENTITY_PROPS, tool["name"])
+        confirm = next(
+            t for t in tools if t["name"] == "personal_memory_confirm"
+        )
+        self.assertEqual(
+            set(confirm["inputSchema"]["properties"]), {"nonce"}
+        )
+
+    def test_remember_then_list(self) -> None:
+        claim_id = self._remember("I drink green tea every morning")
+        listed = self.surface.call_tool("list_personal_memories", {})
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual(listed["items"][0]["claim_id"], claim_id)
+
+    def test_forget_preview_confirm_roundtrip(self) -> None:
+        claim_id = self._remember("I take my coffee black")
+        preview = self.surface.call_tool(
+            "forget_personal_memory", {"claim_id": claim_id}
+        )
+        self.assertTrue(preview["preview"])
+        self.assertTrue(preview.get("request_id"))
+        self.assertEqual(preview.get("claim_id"), claim_id)
+        self.assertEqual(preview.get("delivery"), "operator_outbox")
+        # The nonce must never appear in the tool result.
+        self.assertNotIn("nonce", json.dumps(preview))
+        nonce = _nonce_from_outbox(self._outbox())
+        self.assertTrue(nonce.startswith("n"))
+        self.assertIn("operator outbox", self.err.getvalue())
+        self.assertNotIn(nonce, self.err.getvalue())
+
+        result = self.surface.call_tool(
+            "personal_memory_confirm", {"nonce": nonce}
+        )
+        self.assertFalse(result["preview"])
+        self.assertIn(claim_id, result["erased_claim_ids"])
+        self.assertNotIn("nonce", json.dumps(result))
+        listed = self.surface.call_tool("list_personal_memories", {})
+        self.assertEqual(listed["count"], 0)
+
+    def test_wrong_nonce_denied(self) -> None:
+        claim_id = self._remember("I jog at dawn")
+        self.surface.call_tool("forget_personal_memory", {"claim_id": claim_id})
+        with self.assertRaises(ValidationError):
+            self.surface.call_tool(
+                "personal_memory_confirm", {"nonce": "n-forged"}
+            )
+        listed = self.surface.call_tool("list_personal_memories", {})
+        self.assertEqual(listed["count"], 1)
+
+    def test_binding_mismatch_denied(self) -> None:
+        claim_id = self._remember("I prefer aisle seats")
+        self.surface.call_tool("forget_personal_memory", {"claim_id": claim_id})
+        nonce = _nonce_from_outbox(self._outbox())
+        other_binding = _binding(user_id=_OTHER_USER_ID, chat_id=_OTHER_CHAT_ID)
+        other = apm_mcp.McpToolSurface(
+            actor=other_binding.actor(),
+            binding=other_binding,
+            store=self.store,
+            outbox_path=self._outbox(),
+            stderr=io.StringIO(),
+        )
+        with self.assertRaises(ValidationError):
+            other.call_tool("personal_memory_confirm", {"nonce": nonce})
+        # A mismatched consume does not burn the nonce.
+        result = self.surface.call_tool(
+            "personal_memory_confirm", {"nonce": nonce}
+        )
+        self.assertIn(claim_id, result["erased_claim_ids"])
+
+    def test_do_not_remember_text_match_delivers_preview(self) -> None:
+        claim_id = self._remember("I love weekend hiking trips")
+        preview = self.surface.call_tool(
+            "do_not_remember", {"text": "hiking"}
+        )
+        self.assertTrue(preview["preview"])
+        self.assertIn(claim_id, preview["matched_claim_ids"])
+        self.assertTrue(_nonce_from_outbox(self._outbox()))
+
+    def test_empty_match_preview_sends_nothing(self) -> None:
+        preview = self.surface.call_tool(
+            "do_not_remember", {"text": "no-such-thing"}
+        )
+        self.assertTrue(preview["preview"])
+        self.assertIsNone(preview.get("request_id"))
+        self.assertFalse(self._outbox().exists())
+
+    def test_send_failure_denies_confirm(self) -> None:
+        blocked = self.data_dir / "blocked-outbox"
+        blocked.mkdir()
+        surface = apm_mcp.McpToolSurface(
+            actor=self.binding.actor(),
+            binding=self.binding,
+            store=self.store,
+            outbox_path=blocked,
+            stderr=io.StringIO(),
+        )
+        claim_id = self._remember("I prefer window seats")
+        with self.assertRaises(ValidationError):
+            surface.call_tool(
+                "forget_personal_memory", {"claim_id": claim_id}
+            )
+        # No nonce was registered: nothing is consumable.
+        with self.assertRaises(ValidationError):
+            surface.call_tool(
+                "personal_memory_confirm", {"nonce": "n-anything"}
+            )
+        listed = self.surface.call_tool("list_personal_memories", {})
+        self.assertEqual(listed["count"], 1)
+
+    def test_extra_and_identity_args_rejected(self) -> None:
+        for bad in (
+            {"user_id": _OTHER_USER_ID},
+            {"actor": "someone"},
+            {"tenant_id": "t9"},
+            {"platform": "elsewhere"},
+            {"session_key": "k"},
+            {"bogus_field": 1},
+        ):
+            with self.subTest(args=bad), self.assertRaises(ValidationError) as cm:
+                self.surface.call_tool("list_personal_memories", bad)
+            self.assertIn("unexpected field", str(cm.exception))
+
+    def test_confirm_rejects_injected_binding_fields(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.surface.call_tool(
+                "personal_memory_confirm",
+                {"nonce": "n1", "session_key": "x"},
+            )
+
+    def test_unknown_tool_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as cm:
+            self.surface.call_tool("definitely_not_a_tool", {})
+        self.assertIn("unknown tool", str(cm.exception))
+
+    def test_missing_required_arg_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as cm:
+            self.surface.call_tool("remember_personal_insight", {})
+        self.assertIn("missing required", str(cm.exception))
+
+    def test_non_dict_arguments_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.surface.call_tool("list_personal_memories", ["x"])
+
+    def test_export_owner_data_decodes_bytes(self) -> None:
+        self._remember("I read paper books")
+        payload = self.surface.call_tool("export_owner_data", {})
+        self.assertIsInstance(payload, dict)
+
+
+@unittest.skipUnless(_SDK_AVAILABLE, "optional 'mcp' extra is not installed")
+class StdioServerTests(unittest.TestCase):
+    """Spawn ``python -m agent_personal_memory.mcp`` and speak JSON-RPC."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name)
+        self.proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "agent_personal_memory.mcp",
+                *_argv(str(self.data_dir)),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        self._rid = 0
+        self._stdout: queue.Queue[str] = queue.Queue()
+        self._stderr_lines: list[str] = []
+        threading.Thread(target=self._drain_stdout, daemon=True).start()
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def tearDown(self) -> None:
+        try:
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+        except OSError:
+            pass
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=10)
+        for stream in (self.proc.stdout, self.proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+        self._tmp.cleanup()
+
+    # --- JSON-RPC helpers -----------------------------------------------
+
+    def _drain_stdout(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            stripped = line.strip()
+            if stripped:
+                self._stdout.put(stripped)
+
+    def _drain_stderr(self) -> None:
+        assert self.proc.stderr is not None
+        for line in self.proc.stderr:
+            self._stderr_lines.append(line)
+
+    def _next_message(self, timeout: float = 30.0) -> dict:
+        line = self._stdout.get(timeout=timeout)
+        # stdout purity: every line on stdout must be a JSON-RPC object.
+        message = json.loads(line)
+        self.assertEqual(message.get("jsonrpc"), "2.0")
+        return message
+
+    def _send(self, payload: dict) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(json.dumps(payload) + "\n")
+        self.proc.stdin.flush()
+
+    def _request(self, method: str, params: dict | None = None) -> dict:
+        self._rid += 1
+        request: dict = {"jsonrpc": "2.0", "id": self._rid, "method": method}
+        if params is not None:
+            request["params"] = params
+        self._send(request)
+        while True:
+            response = self._next_message()
+            if response.get("id") == self._rid:
+                return response
+
+    def _notify(self, method: str, params: dict | None = None) -> None:
+        message: dict = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
+        self._send(message)
+
+    def _call_tool(
+        self, name: str, arguments: dict | None = None
+    ) -> dict:
+        response = self._request(
+            "tools/call", {"name": name, "arguments": arguments or {}}
+        )
+        result = response.get("result", {})
+        self.assertFalse(result.get("isError"), response)
+        payload = result.get("structuredContent")
+        if payload is None:
+            content = result.get("content") or []
+            self.assertTrue(content, response)
+            payload = json.loads(content[0]["text"])
+        return payload
+
+    def _call_tool_error(self, name: str, arguments: dict) -> dict:
+        response = self._request(
+            "tools/call", {"name": name, "arguments": arguments}
+        )
+        result = response.get("result", {})
+        self.assertTrue(result.get("isError"), response)
+        return result
+
+    def _handshake(self) -> None:
+        init = self._request(
+            "initialize",
+            {
+                "protocolVersion": _PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "mcp-stdio-test", "version": "0"},
+            },
+        )
+        self.assertIn("result", init)
+        self.assertIn("serverInfo", init["result"])
+        self._notify("notifications/initialized")
+
+    def _stderr_text(self, timeout: float = 5.0) -> str:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self._stderr_lines:
+            time.sleep(0.05)
+        return "".join(self._stderr_lines)
+
+    # --- protocol members -------------------------------------------------
+
+    def test_initialize_and_tools_list(self) -> None:
+        self._handshake()
+        tools = self._request("tools/list")["result"]["tools"]
+        self.assertEqual(len(tools), 21)
+        self.assertEqual({t["name"] for t in tools}, set(apm.TOOL_SCHEMAS))
+        for tool in tools:
+            props = set(tool["inputSchema"].get("properties", {}))
+            self.assertFalse(props & _IDENTITY_PROPS, tool["name"])
+        confirm = next(
+            t for t in tools if t["name"] == "personal_memory_confirm"
+        )
+        self.assertEqual(
+            set(confirm["inputSchema"]["properties"]), {"nonce"}
+        )
+
+    def test_remember_forget_confirm_flow(self) -> None:
+        self._handshake()
+        created = self._call_tool(
+            "remember_personal_insight",
+            {"content": "I take my coffee black"},
+        )
+        claim_id = created["claim_id"]
+        listed = self._call_tool("list_personal_memories", {})
+        self.assertEqual(listed["count"], 1)
+
+        preview = self._call_tool(
+            "forget_personal_memory", {"claim_id": claim_id}
+        )
+        self.assertTrue(preview["preview"])
+        self.assertTrue(preview.get("request_id"))
+        # The nonce-bearing text never enters the MCP response channel.
+        self.assertNotIn("nonce", json.dumps(preview))
+
+        outbox = self.data_dir / "confirmations.jsonl"
+        nonce = _nonce_from_outbox(outbox)
+        record = json.loads(
+            outbox.read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertEqual(record["request_id"], preview["request_id"])
+        self.assertIn("ts", record)
+
+        # stderr carried a delivery notice, not the nonce body.
+        stderr_text = self._stderr_text()
+        self.assertIn("operator outbox", stderr_text)
+        self.assertNotIn(nonce, stderr_text)
+
+        erased = self._call_tool("personal_memory_confirm", {"nonce": nonce})
+        self.assertFalse(erased["preview"])
+        self.assertIn(claim_id, erased["erased_claim_ids"])
+        self.assertNotIn("nonce", json.dumps(erased))
+        self.assertEqual(
+            self._call_tool("list_personal_memories", {})["count"], 0
+        )
+
+    def test_wrong_nonce_denied_over_stdio(self) -> None:
+        self._handshake()
+        self._call_tool(
+            "remember_personal_insight", {"content": "I jog at dawn"}
+        )
+        listed = self._call_tool("list_personal_memories", {})
+        claim_id = listed["items"][0]["claim_id"]
+        self._call_tool("forget_personal_memory", {"claim_id": claim_id})
+        result = self._call_tool_error(
+            "personal_memory_confirm", {"nonce": "n-forged-nonce"}
+        )
+        text = json.dumps(result)
+        self.assertIn("not available", text)
+        self.assertEqual(
+            self._call_tool("list_personal_memories", {})["count"], 1
+        )
+
+    def test_identity_injection_and_unknown_tool_denied(self) -> None:
+        self._handshake()
+        result = self._call_tool_error(
+            "list_personal_memories", {"user_id": _OTHER_USER_ID}
+        )
+        self.assertIn("unexpected field", json.dumps(result))
+        self._call_tool_error(
+            "personal_memory_confirm",
+            {"nonce": "n1", "actor_user_id": _OTHER_USER_ID},
+        )
+        result = self._call_tool_error("definitely_not_a_tool", {})
+        self.assertIn("unknown tool", json.dumps(result))
+
+    def test_server_refuses_missing_binding(self) -> None:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "agent_personal_memory.mcp",
+                "--data-dir",
+                str(self.data_dir),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        out, err = proc.communicate(timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(out.strip(), "")  # stdout stays clean
+        self.assertIn("missing required startup flag", err)
+
+
+if __name__ == "__main__":
+    unittest.main()
