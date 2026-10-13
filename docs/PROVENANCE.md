@@ -63,9 +63,9 @@ carries the rationale.
 | `tests/test_api_surface.py` | — (new) | — | added | exercises every `__init__` export: resolves each `__all__` name, inspects callables, asserts `personal_memory_confirm` exists in `TOOL_SCHEMAS` taking only `nonce`, runs one end-to-end owner flow incl. the confirm-gate consume path |
 | `tests/test_package_metadata.py` | — (new) | — | added | package metadata smoke test created in T1 (dist name, `__version__`, LICENSE holder); T6 removed its `src/` `sys.path` fallback (PH1-F-05) — the install-dependent members are gated on `_dist_installed()` so a bare checkout reports honest skips and a broken install cannot look green |
 | `tests/test_tool_surface.py` | `plugins/personal_memory/tests/test_tools.py` | `f0f6908` | adapted | folds the source `tools.py` coverage onto the standalone API surface (the host `handle_*` wrappers stay in Hermes); see T6 notes for the member map |
-| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery; T11 hardening: provenance rows are matched by first-cell/exact backticked file stem (not substring, PH2-F-02), every `git ls-files` entry must have a first-cell row (PH2-F-01), `_REQUIRED_NEW_FILE_ROWS` covers ci.yml/SKILL.md/threat-model/quickstart test, and a meta assert pins the `cryptography>=42` floor in `pyproject.toml` (PH2-F-08) |
-| `tools/hygiene_scan.py` | — (new) | — | added | repo hygiene scanner (tracked-file scan for host-coupling markers, host paths, secret shapes); created in T1 so the CI scan stays green from PH-2 |
-| `tools/hygiene_allowlist.txt` | — (new) | — | added | allowlist for the intentional retained markers listed in the table below |
+| `tests/test_ci_requirements.py` | `plugins/personal_memory/tests/test_ci_requirements.py` | `f0f6908` | adapted | rewritten for the new layout: the source asserted the host CI requirements lock pinned `cryptography==50.0.0` via the plugin requirements file; there is no lock here, so the file became a meta-test — provenance-table completeness, forbidden-import/marker sweep of `src/`, env-var audit, and a host-path scan of tracked files reusing `tools/hygiene_scan.py` machinery; T11 hardening: provenance rows are matched by first-cell/exact backticked file stem (not substring, PH2-F-02), every `git ls-files` entry must have a first-cell row (PH2-F-01), `_REQUIRED_NEW_FILE_ROWS` covers ci.yml/SKILL.md/threat-model/quickstart test, and a meta assert pins the `cryptography>=42` floor in `pyproject.toml` (PH2-F-08); T12 hardening: `_ENV_READ` covers `environ.setdefault/pop`, bare `environ`/`getenv` call forms, aliased module prefixes and any-case env names (PH2-F-05), and the tracked-file host-path check reuses the scanner's `HOST_PATH_PATTERNS` + per-match-span `unsuppressed_hits` so test and scanner cannot diverge |
+| `tools/hygiene_scan.py` | — (new) | — | adapted | repo hygiene scanner (tracked-file scan for host-coupling markers, host paths, secret shapes); created in T1 so the CI scan stays green from PH-2; T12 hardened the pattern set (generic drive-absolute + POSIX-home paths, colon/unquoted/multiplied secret assignments, `telegram:<digits>`, well-known token literals) and switched allowlist suppression from per-line to per-match-span — see T12 notes |
+| `tools/hygiene_allowlist.txt` | — (new) | — | adapted | allowlist for the intentional retained markers listed in the table below; T12 rewrote entries so each regex matches the marker text itself (span-overlap suppression) |
 | `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11 with the confirm-gate split decision and the MCP command-mapping note) |
 | `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
 | `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` — floor raised to `mcp>=1.28.1` in PH-3 r1 (past the CVE-affected 1.x releases) — and adds the `agent-personal-memory-mcp` console script |
@@ -380,6 +380,47 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
 - PH3-R2-01 resolved: the stale `mcp>=1.12` mention in the T9 notes now
   reads `mcp>=1.28.1`, matching `pyproject.toml`.
 
+### T12 notes
+
+Scanner hardening carried forward from the PH-1/PH-2 reviews; all changes
+are in `tools/hygiene_scan.py`, `tools/hygiene_allowlist.txt` and
+`tests/test_ci_requirements.py`:
+
+- PH1-F-01 / PH2-F-03 resolved: the three drive-specific host-path
+  patterns (the former `F:`-/`G:`-/`C:`-prefixed literals) are replaced by
+  a generic drive-absolute pattern `(?<![\w])[A-Za-z]:[\\/]` — any drive letter,
+  either separator, any case; the `(?<![\w])` lookbehind keeps URI
+  schemes (`https://`, `file://`) unflagged. A POSIX user-home pattern
+  (`/(home|Users)/`) rides along. Both live in the exported
+  `HOST_PATH_PATTERNS` so the meta-test enforces the identical family.
+- PH1-F-02 resolved: secret detection now covers colon/`=>` assignment
+  (`name: "…"`/`name = "…"`), unquoted `NAME=value` (requires a
+  digit-bearing value so `name = generate()` stays clean),
+  short-string-multiplied shapes (`name = "<ch>" * <count>`), and
+  well-known token literals (`sk-…`,
+  `AKIA…`/`ASIA…`, `Bearer …`, `ghp_…`/`gho_…`/…, `github_pat_…`,
+  `xox…-…`, `AIza…`, `-----BEGIN … PRIVATE KEY-----`, JWT `eyJ…` triples).
+  A `telegram:<digits>` pattern flags real Telegram ids while the
+  allowlisted `telegram:{label}:{digest}` label shape stays clean.
+- PH1-F-03 / PH2-F-04 resolved: allowlist suppression is per match span —
+  a hit survives unless an allowlist regex's match on the same line
+  overlaps the hit's span (`unsuppressed_hits`). Every allowlist entry was
+  rewritten to match the marker text itself; doc-only markers are scoped
+  to backticked notation, and the synthetic validator fixtures are
+  allowlisted by exact literal (the bare quoted RSA PEM header only —
+  a PEM with key material stays flagged).
+- PH2-F-05 resolved: `_ENV_READ` in `tests/test_ci_requirements.py` now
+  covers `environ.setdefault`/`pop`, bare `environ[...]`/`environ.get()`/
+  `getenv()` call forms (`from os import …`), aliased `<module>.` prefixes
+  and any-case env names.
+- The tracked-file host-path meta-test now calls the scanner's own
+  `HOST_PATH_PATTERNS` + `unsuppressed_hits`, so scanner and test cannot
+  diverge (the old local copy under-matched backslash drive paths).
+- No real leaks surfaced while widening the patterns: the only new hits
+  were the intentional `MARKER_SECRETS`/`embedded_tokens`/`PRODUCTION_MARKERS`
+  fixtures and the documented `F:\Hermes`/`HERMES_HOME` doc mentions,
+  all re-allowlisted at span granularity.
+
 ### T2 notes
 
 - All crypto/erasure invariants are byte-faithful to `f0f6908`: AES-GCM-256,
@@ -397,16 +438,22 @@ Ported code intentionally keeps the following source strings verbatim. They
 are format identifiers or observability labels, not host coupling; each is
 allowlisted in `tools/hygiene_allowlist.txt`.
 
+Since T12, allowlist suppression is **per match span**: an allowlist regex
+must match text that overlaps the scan hit itself (a phrase elsewhere on
+the same line suppresses nothing), so each entry below names the marker
+text — doc-only markers are scoped to their backticked notation.
+
 | Marker | Location | Rationale |
 | --- | --- | --- |
 | `hermes.personal_memory.lookup.v1` | `crypto.py` (HKDF info / AAD) | ciphertext lookup-format compatibility with the `f0f6908` source |
 | `plugins.personal-memory*` | logger names in ported modules | log-source parity with the source so operators can correlate logs |
-| `telegram:` | `types.py` `external_ref` label shape | record-format compatibility for refs minted by the source |
+| `telegram:` (non-numeric) | `types.py`/`mutations.py` `external_ref` label shape `telegram:{label}:{digest}` | record-format compatibility for refs minted by the source; `telegram:<digits>` stays flagged |
 | `hermes-pm-bench-` | bench runner temp-dir prefix | retained in ported bench code; cosmetic, no functional coupling |
 | `hermes-pm-*` | `tests/` `TemporaryDirectory` prefixes | verbatim source test-fixture strings; cosmetic marker, not a scan hit |
-| `PRODUCTION_MARKERS` | bench self-test fixture | fixture strings that intentionally embed production-path markers to assert they never leak into outputs |
+| `PRODUCTION_MARKERS = (…)` | bench self-test fixture | tuple definition embeds production-path marker strings to assert they never leak into outputs |
 | `OPAQUE_SECRET` | `tests/test_validation.py` | synthetic non-credential fixture exercising opaque-secret detection in the ported validation tests; allowlisted so the scanner does not flag its `SECRET = "…"` shape |
-| `dropped source env fallback` | this file (File map, `store.py` row) | doc-only mention of the removed `HERMES_HOME`/`F:\Hermes` default inside the sanctioned-delta record; allowlisted phrase, never present in code |
+| `MARKER_SECRETS` / `embedded_tokens` literals (`AKIAIOSFODNN7EXAMPLE`, `Bearer ya29.…`, the jwt.io example token, the bare quoted RSA PEM header) | `tests/test_validation.py` | well-known documentation example values reused verbatim as synthetic validator fixtures, allowlisted by exact literal so real credentials of the same shapes stay flagged |
+| backticked `HERMES_HOME`, `F:\Hermes` and not-ported module names (`pre_gateway_dispatch`, `miniapp_*`, `night_cycle1…`, `peer_import`, `travel_compute`, `plugin.yaml`, `spikes`) | this file (File map) and `adr/0002-core-boundary.md` | doc-only mentions, inside backticks, of the removed `HERMES_HOME`/host-path default and of modules that stay in Hermes; allowlisted per backticked span — bare unbackticked occurrences stay flagged |
 
 If a later task must retain an additional marker, it is added to this table
 and to `tools/hygiene_allowlist.txt` in the same commit.
