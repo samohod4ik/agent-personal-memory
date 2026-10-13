@@ -1,4 +1,11 @@
-# personal-memory-oss (working name)
+# agent-personal-memory
 
-Privacy-first local personal memory for AI agents: Python library + thin MCP server + Agent Skill.
-Working name; final repository name is decided in the delivery goal stage. License: MIT.
+Local-first encrypted personal memory for AI agents (privacy-focused,
+owner-controlled).
+
+> Documentation and full README land in a later phase. This repository is
+> private while the extraction is in progress.
+
+Russian mirror: [README.ru.md](README.ru.md)
+
+License: [MIT](LICENSE)

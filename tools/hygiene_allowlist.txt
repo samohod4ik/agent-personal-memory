@@ -1,0 +1,13 @@
+# Hygiene scan allowlist: intentional markers retained verbatim from the
+# f0f6908 source port (see docs/PROVENANCE.md "Retained compatibility strings").
+#
+# Format: one entry per line as "<regex><TAB><reason>"; "<regex> # reason" is
+# also accepted. Blank lines and lines starting with '#' are comments.
+# A scan hit is suppressed when an allowlist regex matches the source line
+# containing the hit.
+hermes\.personal_memory\.lookup\.v1	crypto HKDF/AAD lookup identifier retained verbatim for ciphertext format compatibility
+plugins\.personal-memory	logger name prefix retained verbatim for log-source parity with the source
+telegram:	external_ref label shape kept in types.py for record-format compatibility
+hermes-pm-bench-	temp-dir prefix retained in ported bench runner code
+PRODUCTION_MARKERS	test fixture strings that intentionally embed production-path markers to assert non-leakage
+stays in Hermes	ADR-0002 boundary table names excluded host modules verbatim as the boundary record

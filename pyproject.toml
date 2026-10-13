@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-personal-memory"
+version = "0.1.0"
+description = "Local-first encrypted personal memory for AI agents (privacy-focused, owner-controlled)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "samohod4ik"},
+]
+dependencies = ["cryptography>=42"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.9"]
+
+[project.urls]
+Homepage = "https://github.com/samohod4ik/agent-personal-memory"
+Repository = "https://github.com/samohod4ik/agent-personal-memory"
+Issues = "https://github.com/samohod4ik/agent-personal-memory/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agent_personal_memory*"]
