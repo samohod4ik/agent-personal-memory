@@ -1,0 +1,1073 @@
+{
+  "corpus_version": 1,
+  "cases": [
+    {
+      "id": "acl_cross_tenant_en",
+      "language": "en",
+      "category": "acl",
+      "fixture_id": "acl_cross_tenant",
+      "prompt": {
+        "language": "en",
+        "text": "List stored preferences."
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"},
+        "bob": {"platform": "t", "user_id": "2", "display_name": "Bob"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-acl-en",
+            "snapshot": "alice preference notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Alice notes", "language": "en"}
+          },
+          {
+            "alias": "alice_confirm",
+            "actor": "alice",
+            "source_kind": "user_confirmation",
+            "external_ref": "ref-alice-acl-confirm-en",
+            "snapshot": "yes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "confirm", "language": "en"}
+          },
+          {
+            "alias": "bob_doc",
+            "actor": "bob",
+            "source_kind": "document",
+            "external_ref": "ref-bob-acl-en",
+            "snapshot": "bob preference notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Bob notes", "language": "en"}
+          },
+          {
+            "alias": "bob_confirm",
+            "actor": "bob",
+            "source_kind": "user_confirmation",
+            "external_ref": "ref-bob-acl-confirm-en",
+            "snapshot": "yes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "confirm", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers green tea",
+            "confidence": 0.8,
+            "explanation": "en preference",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "confirm": true,
+            "confirm_source_alias": "alice_confirm"
+          },
+          {
+            "alias": "bob_live",
+            "actor": "bob",
+            "claim_kind": "preference",
+            "content": "prefers black coffee",
+            "confidence": 0.8,
+            "explanation": "en preference",
+            "sensitivity": "normal",
+            "source_aliases": ["bob_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "confirm": true,
+            "confirm_source_alias": "bob_confirm"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["bob_live"],
+            "labels": {"alice_live": {"state": "confirmed", "claim_kind": "preference"}}
+          }
+        },
+        {
+          "id": "bob_default_claims",
+          "op": "query_claims",
+          "actor": "bob",
+          "args": {},
+          "expect": {
+            "include_claims": ["bob_live"],
+            "exclude_claims": ["alice_live"],
+            "labels": {"bob_live": {"state": "confirmed"}}
+          }
+        },
+        {
+          "id": "alice_default_sources",
+          "op": "query_sources",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_sources": ["alice_doc", "alice_confirm"],
+            "exclude_sources": ["bob_doc", "bob_confirm"]
+          }
+        },
+        {
+          "id": "alice_get_bob_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_alias": "bob_live"},
+          "expect": {
+            "not_found": "Claim not found",
+            "identical_to": "alice_get_missing_claim"
+          }
+        },
+        {
+          "id": "alice_get_missing_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_id": "00000000-0000-0000-0000-000000000000"},
+          "expect": {"not_found": "Claim not found"}
+        },
+        {
+          "id": "alice_get_bob_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_alias": "bob_doc"},
+          "expect": {
+            "not_found": "Source not found",
+            "identical_to": "alice_get_missing_source"
+          }
+        },
+        {
+          "id": "alice_get_missing_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_id": "00000000-0000-0000-0000-000000000001"},
+          "expect": {"not_found": "Source not found"}
+        }
+      ]
+    },
+    {
+      "id": "acl_cross_tenant_ru",
+      "language": "ru",
+      "category": "acl",
+      "fixture_id": "acl_cross_tenant",
+      "prompt": {
+        "language": "ru",
+        "text": "Покажи сохранённые предпочтения."
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Алиса"},
+        "bob": {"platform": "t", "user_id": "2", "display_name": "Боб"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-acl-ru",
+            "snapshot": "заметки алисы о предпочтениях",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Заметки Алисы", "language": "ru"}
+          },
+          {
+            "alias": "alice_confirm",
+            "actor": "alice",
+            "source_kind": "user_confirmation",
+            "external_ref": "ref-alice-acl-confirm-ru",
+            "snapshot": "да",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "подтверждение", "language": "ru"}
+          },
+          {
+            "alias": "bob_doc",
+            "actor": "bob",
+            "source_kind": "document",
+            "external_ref": "ref-bob-acl-ru",
+            "snapshot": "заметки боба о предпочтениях",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Заметки Боба", "language": "ru"}
+          },
+          {
+            "alias": "bob_confirm",
+            "actor": "bob",
+            "source_kind": "user_confirmation",
+            "external_ref": "ref-bob-acl-confirm-ru",
+            "snapshot": "да",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "подтверждение", "language": "ru"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "предпочитает зелёный чай",
+            "confidence": 0.8,
+            "explanation": "ru preference",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "confirm": true,
+            "confirm_source_alias": "alice_confirm"
+          },
+          {
+            "alias": "bob_live",
+            "actor": "bob",
+            "claim_kind": "preference",
+            "content": "предпочитает чёрный кофе",
+            "confidence": 0.8,
+            "explanation": "ru preference",
+            "sensitivity": "normal",
+            "source_aliases": ["bob_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "confirm": true,
+            "confirm_source_alias": "bob_confirm"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["bob_live"],
+            "labels": {"alice_live": {"state": "confirmed", "claim_kind": "preference"}}
+          }
+        },
+        {
+          "id": "bob_default_claims",
+          "op": "query_claims",
+          "actor": "bob",
+          "args": {},
+          "expect": {
+            "include_claims": ["bob_live"],
+            "exclude_claims": ["alice_live"],
+            "labels": {"bob_live": {"state": "confirmed"}}
+          }
+        },
+        {
+          "id": "alice_default_sources",
+          "op": "query_sources",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_sources": ["alice_doc", "alice_confirm"],
+            "exclude_sources": ["bob_doc", "bob_confirm"]
+          }
+        },
+        {
+          "id": "alice_get_bob_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_alias": "bob_live"},
+          "expect": {
+            "not_found": "Claim not found",
+            "identical_to": "alice_get_missing_claim"
+          }
+        },
+        {
+          "id": "alice_get_missing_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_id": "00000000-0000-0000-0000-000000000000"},
+          "expect": {"not_found": "Claim not found"}
+        },
+        {
+          "id": "alice_get_bob_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_alias": "bob_doc"},
+          "expect": {
+            "not_found": "Source not found",
+            "identical_to": "alice_get_missing_source"
+          }
+        },
+        {
+          "id": "alice_get_missing_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_id": "00000000-0000-0000-0000-000000000001"},
+          "expect": {"not_found": "Source not found"}
+        }
+      ]
+    },
+    {
+      "id": "deleted_erased_rows_en",
+      "language": "en",
+      "category": "deleted",
+      "fixture_id": "deleted_erased_rows",
+      "prompt": {
+        "language": "en",
+        "text": "Show remaining memory rows."
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-live-en",
+            "snapshot": "live notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Live", "language": "en"}
+          },
+          {
+            "alias": "alice_erased_source",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-gone-en",
+            "snapshot": "gone notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Gone", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers quiet mornings",
+            "confidence": 0.7,
+            "explanation": "en live",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_erased_claim",
+            "actor": "alice",
+            "claim_kind": "task",
+            "content": "old shopping list",
+            "confidence": 0.6,
+            "explanation": "en erased",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "erase": true
+          }
+        ],
+        "mutations": [
+          {
+            "op": "erase_source",
+            "actor": "alice",
+            "alias": "alice_erased_source"
+          }
+        ]
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["alice_erased_claim"],
+            "labels": {"alice_live": {"state": "candidate"}}
+          }
+        },
+        {
+          "id": "alice_default_sources",
+          "op": "query_sources",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_sources": ["alice_doc"],
+            "exclude_sources": ["alice_erased_source"]
+          }
+        },
+        {
+          "id": "alice_get_erased_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_alias": "alice_erased_claim"},
+          "expect": {
+            "not_found": "Claim not found",
+            "identical_to": "alice_get_missing_claim"
+          }
+        },
+        {
+          "id": "alice_get_missing_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_id": "00000000-0000-0000-0000-000000000000"},
+          "expect": {"not_found": "Claim not found"}
+        },
+        {
+          "id": "alice_get_erased_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_alias": "alice_erased_source"},
+          "expect": {
+            "not_found": "Source not found",
+            "identical_to": "alice_get_missing_source"
+          }
+        },
+        {
+          "id": "alice_get_missing_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_id": "00000000-0000-0000-0000-000000000001"},
+          "expect": {"not_found": "Source not found"}
+        }
+      ]
+    },
+    {
+      "id": "deleted_erased_rows_ru",
+      "language": "ru",
+      "category": "deleted",
+      "fixture_id": "deleted_erased_rows",
+      "prompt": {
+        "language": "ru",
+        "text": "Покажи оставшиеся записи памяти."
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Алиса"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-live-ru",
+            "snapshot": "живые заметки",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Живые", "language": "ru"}
+          },
+          {
+            "alias": "alice_erased_source",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-gone-ru",
+            "snapshot": "удалённые заметки",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Удалено", "language": "ru"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "предпочитает тихие утра",
+            "confidence": 0.7,
+            "explanation": "ru live",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_erased_claim",
+            "actor": "alice",
+            "claim_kind": "task",
+            "content": "старый список покупок",
+            "confidence": 0.6,
+            "explanation": "ru erased",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "erase": true
+          }
+        ],
+        "mutations": [
+          {
+            "op": "erase_source",
+            "actor": "alice",
+            "alias": "alice_erased_source"
+          }
+        ]
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["alice_erased_claim"],
+            "labels": {"alice_live": {"state": "candidate"}}
+          }
+        },
+        {
+          "id": "alice_default_sources",
+          "op": "query_sources",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_sources": ["alice_doc"],
+            "exclude_sources": ["alice_erased_source"]
+          }
+        },
+        {
+          "id": "alice_get_erased_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_alias": "alice_erased_claim"},
+          "expect": {
+            "not_found": "Claim not found",
+            "identical_to": "alice_get_missing_claim"
+          }
+        },
+        {
+          "id": "alice_get_missing_claim",
+          "op": "get_authorized_claim",
+          "actor": "alice",
+          "args": {"claim_id": "00000000-0000-0000-0000-000000000000"},
+          "expect": {"not_found": "Claim not found"}
+        },
+        {
+          "id": "alice_get_erased_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_alias": "alice_erased_source"},
+          "expect": {
+            "not_found": "Source not found",
+            "identical_to": "alice_get_missing_source"
+          }
+        },
+        {
+          "id": "alice_get_missing_source",
+          "op": "get_authorized_source",
+          "actor": "alice",
+          "args": {"source_id": "00000000-0000-0000-0000-000000000001"},
+          "expect": {"not_found": "Source not found"}
+        }
+      ]
+    },
+    {
+      "id": "stale_expired_default_en",
+      "language": "en",
+      "category": "stale",
+      "fixture_id": "stale_expired_default",
+      "prompt": {
+        "language": "en",
+        "text": "What current claims remain?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-stale-en",
+            "snapshot": "mixed freshness notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Freshness", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers window seats",
+            "confidence": 0.7,
+            "explanation": "en live candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_stale",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers aisle seats last year",
+            "confidence": 0.5,
+            "explanation": "en stale candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-01-01T00:00:00Z",
+            "valid_to": "2026-03-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_restricted",
+            "actor": "alice",
+            "claim_kind": "decision",
+            "content": "keeps a short home street name",
+            "confidence": 0.9,
+            "explanation": "en restricted",
+            "sensitivity": "restricted",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": [
+          {
+            "op": "expire_claim",
+            "alias": "alice_stale",
+            "expires_at": "2020-01-01T00:00:00Z"
+          }
+        ]
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["alice_stale", "alice_restricted"],
+            "labels": {"alice_live": {"state": "candidate"}}
+          }
+        }
+      ]
+    },
+    {
+      "id": "stale_expired_default_ru",
+      "language": "ru",
+      "category": "stale",
+      "fixture_id": "stale_expired_default",
+      "prompt": {
+        "language": "ru",
+        "text": "Какие текущие утверждения остаются?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Алиса"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-stale-ru",
+            "snapshot": "заметки разной свежести",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Свежесть", "language": "ru"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_live",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "предпочитает места у окна",
+            "confidence": 0.7,
+            "explanation": "ru live candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_stale",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "в прошлом году предпочитала места у прохода",
+            "confidence": 0.5,
+            "explanation": "ru stale candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-01-01T00:00:00Z",
+            "valid_to": "2026-03-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_restricted",
+            "actor": "alice",
+            "claim_kind": "decision",
+            "content": "хранит короткое название улицы",
+            "confidence": 0.9,
+            "explanation": "ru restricted",
+            "sensitivity": "restricted",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": [
+          {
+            "op": "expire_claim",
+            "alias": "alice_stale",
+            "expires_at": "2020-01-01T00:00:00Z"
+          }
+        ]
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_live"],
+            "exclude_claims": ["alice_stale", "alice_restricted"],
+            "labels": {"alice_live": {"state": "candidate"}}
+          }
+        }
+      ]
+    },
+    {
+      "id": "contradictory_two_candidates_en",
+      "language": "en",
+      "category": "contradictory",
+      "fixture_id": "contradictory_two_candidates",
+      "prompt": {
+        "language": "en",
+        "text": "Which drink preferences are still candidates?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-contradict-en",
+            "snapshot": "tea versus coffee notes",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Drinks", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_tea",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers tea",
+            "confidence": 0.6,
+            "explanation": "en tea candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_coffee",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers coffee",
+            "confidence": 0.6,
+            "explanation": "en coffee candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_tea", "alice_coffee"],
+            "labels": {
+              "alice_tea": {"state": "candidate"},
+              "alice_coffee": {"state": "candidate"}
+            }
+          }
+        },
+        {
+          "id": "alice_candidates",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"states": ["candidate"]},
+          "expect": {
+            "include_claims": ["alice_tea", "alice_coffee"],
+            "labels": {
+              "alice_tea": {"state": "candidate"},
+              "alice_coffee": {"state": "candidate"}
+            }
+          }
+        },
+        {
+          "id": "alice_confirmed",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"states": ["confirmed"]},
+          "expect": {
+            "exclude_claims": ["alice_tea", "alice_coffee"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "contradictory_two_candidates_ru",
+      "language": "ru",
+      "category": "contradictory",
+      "fixture_id": "contradictory_two_candidates",
+      "prompt": {
+        "language": "ru",
+        "text": "Какие предпочтения по напиткам ещё кандидаты?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Алиса"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-contradict-ru",
+            "snapshot": "заметки чай против кофе",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Напитки", "language": "ru"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_tea",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "предпочитает чай",
+            "confidence": 0.6,
+            "explanation": "ru tea candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          },
+          {
+            "alias": "alice_coffee",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "предпочитает кофе",
+            "confidence": 0.6,
+            "explanation": "ru coffee candidate",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_tea", "alice_coffee"],
+            "labels": {
+              "alice_tea": {"state": "candidate"},
+              "alice_coffee": {"state": "candidate"}
+            }
+          }
+        },
+        {
+          "id": "alice_candidates",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"states": ["candidate"]},
+          "expect": {
+            "include_claims": ["alice_tea", "alice_coffee"],
+            "labels": {
+              "alice_tea": {"state": "candidate"},
+              "alice_coffee": {"state": "candidate"}
+            }
+          }
+        },
+        {
+          "id": "alice_confirmed",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"states": ["confirmed"]},
+          "expect": {
+            "exclude_claims": ["alice_tea", "alice_coffee"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "bilingual_same_fixture_en",
+      "language": "en",
+      "category": "bilingual",
+      "fixture_id": "bilingual_tea_preference",
+      "prompt": {
+        "language": "en",
+        "text": "What tea preference is stored?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-bilingual-tea",
+            "snapshot": "tea preference fixture",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Tea preference", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_tea",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers green tea",
+            "confidence": 0.8,
+            "explanation": "language_tag=en",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_tea"],
+            "labels": {"alice_tea": {"state": "candidate", "claim_kind": "preference"}}
+          }
+        },
+        {
+          "id": "alice_preferences",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"claim_kinds": ["preference"]},
+          "expect": {
+            "include_claims": ["alice_tea"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "bilingual_same_fixture_ru",
+      "language": "ru",
+      "category": "bilingual",
+      "fixture_id": "bilingual_tea_preference",
+      "prompt": {
+        "language": "ru",
+        "text": "Какое предпочтение по чаю сохранено?"
+      },
+      "actors": {
+        "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+      },
+      "seed": {
+        "sources": [
+          {
+            "alias": "alice_doc",
+            "actor": "alice",
+            "source_kind": "document",
+            "external_ref": "ref-alice-bilingual-tea",
+            "snapshot": "tea preference fixture",
+            "observed_at": "2026-08-31T10:00:00Z",
+            "retention_class": "standard",
+            "metadata": {"title": "Tea preference", "language": "en"}
+          }
+        ],
+        "claims": [
+          {
+            "alias": "alice_tea",
+            "actor": "alice",
+            "claim_kind": "preference",
+            "content": "prefers green tea",
+            "confidence": 0.8,
+            "explanation": "language_tag=en",
+            "sensitivity": "normal",
+            "source_aliases": ["alice_doc"],
+            "valid_from": "2026-08-01T00:00:00Z",
+            "valid_to": "2026-12-31T23:59:59Z",
+            "expires_at": "2099-01-01T00:00:00Z"
+          }
+        ],
+        "mutations": []
+      },
+      "queries": [
+        {
+          "id": "alice_default_claims",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {},
+          "expect": {
+            "include_claims": ["alice_tea"],
+            "labels": {"alice_tea": {"state": "candidate", "claim_kind": "preference"}}
+          }
+        },
+        {
+          "id": "alice_preferences",
+          "op": "query_claims",
+          "actor": "alice",
+          "args": {"claim_kinds": ["preference"]},
+          "expect": {
+            "include_claims": ["alice_tea"]
+          }
+        }
+      ]
+    }
+  ]
+}
