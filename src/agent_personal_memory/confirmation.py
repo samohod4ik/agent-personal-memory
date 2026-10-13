@@ -23,6 +23,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .locale import (
+    format_claim_summary,
+    format_mutation_confirmation,
+    normalize_language,
+)
 from .query import get_authorized_claim
 from .store import PersonalMemoryStore
 from .types import Actor
@@ -369,7 +374,7 @@ def bind_targets(
         items.append(
             {
                 "claim_id": str(row["claim_id"]),
-                "summary": _format_claim_summary(row, language=language, include_content=True),
+                "summary": format_claim_summary(row, language=language, include_content=True),
                 "state": row.get("state"),
                 "claim_kind": row.get("claim_kind"),
                 "version": int(row["version"]),
@@ -399,7 +404,7 @@ def create_delete_preview(
     ``session_binding`` are explicit arguments; there is no ambient session
     lookup or default store construction.
     """
-    lang = _normalize_language(language)
+    lang = normalize_language(language)
     binding = session_binding
     if not claim_ids:
         return {
@@ -407,7 +412,7 @@ def create_delete_preview(
             "preview": True,
             "matched_claim_ids": [],
             "items": [],
-            "confirmation": _format_mutation_confirmation(empty_kind, language=lang),
+            "confirmation": format_mutation_confirmation(empty_kind, language=lang),
         }
     targets, items = bind_targets(
         actor,
@@ -421,7 +426,7 @@ def create_delete_preview(
         "preview": True,
         "matched_claim_ids": [item["claim_id"] for item in items],
         "items": items,
-        "confirmation": _format_mutation_confirmation(
+        "confirmation": format_mutation_confirmation(
             preview_kind,
             language=lang,
             count=len(items),
@@ -483,7 +488,7 @@ def consume_delete_request(
         "do_not_remember": "do_not_remember_some",
         "reject_candidate_memory": "reject_candidate",
     }.get(record.action, "forget")
-    confirmation = _format_mutation_confirmation(
+    confirmation = format_mutation_confirmation(
         kind,
         language=record.language,
         count=len(erased_ids),
@@ -500,162 +505,6 @@ def consume_delete_request(
     if len(erased_ids) == 1:
         payload["claim_id"] = erased_ids[0]
     return payload
-
-
-# --- User-facing text ------------------------------------------------------
-# The helpers below are vendored verbatim from the source ``locale`` module
-# (only the pieces the confirm-gate needs). They are module-private here and
-# will be repointed at the ported locale module when the owner-flow layer
-# lands; see docs/PROVENANCE.md.
-
-SUPPORTED_LANGUAGES = frozenset({"en", "ru"})
-
-_STATE_LABELS = {
-    "en": {
-        "candidate": "candidate memory",
-        "confirmed": "confirmed memory",
-    },
-    "ru": {
-        "candidate": "кандидат в память",
-        "confirmed": "подтверждённая память",
-    },
-}
-
-_KIND_LABELS = {
-    "en": {
-        "preference": "preference",
-        "confirmed_fact": "confirmed fact",
-        "candidate_insight": "candidate insight",
-        "raw_event": "raw event",
-        "task": "task",
-        "decision": "decision",
-        "summary": "summary",
-    },
-    "ru": {
-        "preference": "предпочтение",
-        "confirmed_fact": "подтверждённый факт",
-        "candidate_insight": "кандидат-вывод",
-        "raw_event": "исходное событие",
-        "task": "задача",
-        "decision": "решение",
-        "summary": "краткое резюме",
-    },
-}
-
-_MUTATION_CONFIRM = {
-    "correct": {
-        "en": "Memory updated with your correction (version {version}).",
-        "ru": "Память обновлена с вашим исправлением (версия {version}).",
-    },
-    "forget_preview": {
-        "en": "Preview: forget {summary}. Open /memory_delete to review the exact list.",
-        "ru": "Предпросмотр: удалить {summary}. Откройте /memory_delete для точного списка.",
-    },
-    "forget": {
-        "en": "The selected memory was permanently forgotten.",
-        "ru": "Выбранная запись памяти удалена без возможности восстановления.",
-    },
-    "do_not_remember_preview": {
-        "en": "Preview: forget {count} matching {unit}. Open /memory_delete to review the exact list.",
-        "ru": "Предпросмотр: удалить записей — {count}. Откройте /memory_delete для точного списка.",
-    },
-    "do_not_remember_none": {
-        "en": "No matching memories were found to forget.",
-        "ru": "Подходящие записи памяти для удаления не найдены.",
-    },
-    "do_not_remember_some": {
-        "en": "Forgot {count} matching {unit}.",
-        "ru": "Удалено записей памяти: {count}.",
-    },
-    "confirm_candidate": {
-        "en": "Candidate memory confirmed and saved.",
-        "ru": "Кандидат в память подтверждён и сохранён.",
-    },
-    "reject_candidate_preview": {
-        "en": "Preview: reject {summary}. Open /memory_delete to review the exact list.",
-        "ru": "Предпросмотр: отклонить {summary}. Откройте /memory_delete для точного списка.",
-    },
-    "reject_candidate": {
-        "en": "Candidate memory rejected and permanently erased.",
-        "ru": "Кандидат в память отклонён и удалён без возможности восстановления.",
-    },
-    "remember_confirmed": {
-        "en": "Remembered and confirmed for future turns.",
-        "ru": "Запомнено и подтверждено для следующих ответов.",
-    },
-    "remember_candidate": {
-        "en": "Saved as a candidate. Confirm it to inject on later turns.",
-        "ru": "Сохранено как кандидат. Подтвердите, чтобы использовать в следующих ответах.",
-    },
-    "memory_mode": {
-        "en": "Personal memory mode is {mode}.",
-        "ru": "Режим личной памяти: {mode}.",
-    },
-}
-
-
-def _normalize_language(value: object) -> str:
-    if value is None:
-        return "en"
-    if not isinstance(value, str):
-        _fail_language()
-    language = value.strip().lower()
-    if not language:
-        return "en"
-    if language not in SUPPORTED_LANGUAGES:
-        _fail_language()
-    return language
-
-
-def _fail_language() -> None:
-    raise ValidationError("language: must be 'en' or 'ru'")
-
-
-def _label(table: dict[str, dict[str, str]], language: str, key: object, fallback: str) -> str:
-    return table.get(language, table["en"]).get(str(key), fallback)
-
-
-def _format_claim_summary(
-    row: dict[str, object],
-    *,
-    language: str,
-    include_content: bool = False,
-) -> str:
-    lang = _normalize_language(language)
-    state = _label(_STATE_LABELS, lang, row.get("state"), str(row.get("state", "")))
-    kind = _label(_KIND_LABELS, lang, row.get("claim_kind"), str(row.get("claim_kind", "")))
-    confidence = float(row.get("confidence", 0.0))
-    created_at = str(row.get("created_at", ""))
-    if lang == "ru":
-        base = f"{kind} ({state}), уверенность {confidence:.2f}, создано {created_at}"
-    else:
-        base = f"{kind} ({state}), confidence {confidence:.2f}, created {created_at}"
-    if include_content and row.get("content") is not None:
-        content = row["content"]
-        if isinstance(content, (bytes, bytearray)):
-            try:
-                text = bytes(content).decode("utf-8")
-            except UnicodeDecodeError:
-                text = "<binary>"
-        else:
-            text = str(content)
-        if lang == "ru":
-            return f"{base}; содержание: {text}"
-        return f"{base}; content: {text}"
-    return base
-
-
-def _format_mutation_confirmation(kind: str, *, language: str, **values: object) -> str:
-    lang = _normalize_language(language)
-    templates = _MUTATION_CONFIRM[kind]
-    template = templates.get(lang, templates["en"])
-    if kind in {"do_not_remember_some", "do_not_remember_preview"}:
-        count = int(values.get("count", 0))
-        if lang == "en":
-            unit = "memory" if count == 1 else "memories"
-            return template.format(count=count, unit=unit)
-        return template.format(count=count)
-    return template.format(**values)
 
 
 # --- Private helpers -------------------------------------------------------
