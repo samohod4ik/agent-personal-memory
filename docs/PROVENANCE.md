@@ -17,7 +17,10 @@ carries the rationale.
 | `src/agent_personal_memory/store.py` | `plugins/personal_memory/store.py` | `f0f6908` | adapted | `default_data_dir` resolution changed to explicit arg → `PERSONAL_MEMORY_DATA_DIR` → `~/.agent-personal-memory`; dropped source env fallback (`HERMES_HOME` → `F:\Hermes\data\personal-memory`); constructor signature widened to `data_dir: str \| Path \| None`; logger name `plugins.personal-memory` retained verbatim |
 | `src/agent_personal_memory/validation.py` | `plugins/personal_memory/validation.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/erasure.py` | `plugins/personal_memory/erasure.py` | `f0f6908` | ported | none — verbatim |
-| `src/agent_personal_memory/fts_index.py` | `plugins/personal_memory/fts_index.py` | `f0f6908` | adapted | partial port: only the erasure-side helpers `store.py` calls (`delete_claim_fts_rows`, `_fts_table_exists`, `_ensure_fts_table` with the same FTS5 table DDL); index-build and FTS ranking functions depend on the query/ranking modules and land with the authorized-read task; no behavior change on erasure paths |
+| `src/agent_personal_memory/fts_index.py` | `plugins/personal_memory/fts_index.py` | `f0f6908` | ported | none — verbatim full module (T2 had landed only the erasure-side helpers; T3 added `build_claim_fts_index`/`fts_index_present`/`rank_claims_fts` verbatim, so the file is now byte-identical to the source; tenant scope stays a `tenant_id = ?` predicate inside the FTS query plus authorized-candidate post-checks, exactly as source) |
+| `src/agent_personal_memory/query.py` | `plugins/personal_memory/query.py` | `f0f6908` | ported | none — verbatim |
+| `src/agent_personal_memory/ranking.py` | `plugins/personal_memory/ranking.py` | `f0f6908` | ported | none — verbatim |
+| `src/agent_personal_memory/score_locality.py` | `plugins/personal_memory/score_locality.py` | `f0f6908` | ported | none — verbatim |
 | `docs/adr/0008-physical-erasure-and-tombstones.md` | `docs/adr/0008-physical-erasure-and-tombstones.md` | `f0f6908` | ported | none — verbatim; referenced by the ported erasure test |
 | `tests/test_store.py` | `plugins/personal_memory/tests/test_store.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; source-file reads go through `store_module.__file__` instead of a plugins-root path |
 | `tests/test_crypto.py` | `plugins/personal_memory/tests/test_crypto.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*` |
@@ -27,6 +30,31 @@ carries the rationale.
 | `tests/test_audit.py` | `plugins/personal_memory/tests/test_audit.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*` |
 | `tests/test_memory_mode.py` | `plugins/personal_memory/tests/test_memory_mode.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*` |
 | `tests/test_lifecycle.py` | `plugins/personal_memory/tests/test_lifecycle.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; source-file reads go through `lifecycle_module.__file__`/`store_module.__file__` |
+| `tests/test_query.py` | `plugins/personal_memory/tests/test_query.py` | `f0f6908` | adapted | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; `patch` target renamed to `agent_personal_memory.store`; dropped member `test_query_schemas_have_no_tenant_selectors_and_are_not_tools` (imports `personal_memory._TOOLS` tools-module internals and `schemas`, both outside this task's boundary — schemas lands with the API task, `_TOOLS` stays in Hermes); now-unused module-level `schemas` import, `FORBIDDEN_SELECTORS` constant and `_walk` helper removed with it |
+| `tests/test_ranking.py` | `plugins/personal_memory/tests/test_ranking.py` | `f0f6908` | adapted | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; dropped member `test_assembler_query_text_reorders_personal_section` (assembler lands with the API/UX task); now-unused module-level `assemble_context` import removed with it |
+| `tests/test_score_locality.py` | `plugins/personal_memory/tests/test_score_locality.py` | `f0f6908` | adapted | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; forced delta: `CRITERIA` repointed from `evals/personal-memory-bench/QUALITY_CRITERIA.md` to this repo's `bench/QUALITY_CRITERIA.md` (bench lands in a later task) and `test_quality_criteria_document_covers_cluster_b` carries a `skipUnless(CRITERIA.is_file())` guard so it self-activates once that file exists; all other members verbatim |
+
+### T3 notes
+
+- `query.py`, `ranking.py`, `score_locality.py` and the completed
+  `fts_index.py` are byte-identical to `f0f6908` (verified by `diff`).
+- Preserved read-layer invariants: the tenant predicate remains a
+  `tenant_id = ?` term inside the FTS `MATCH` query (never a post-filter
+  alone); `rank_claims`/`rank_claims_fts`/`score_locality`/
+  `apply_snippet_acl` keep their source names and signatures; ranking
+  sees only authorized candidates; cross-tenant `get_authorized_*`
+  denials stay byte-identical `NotFoundError`("Claim not found"/"Source
+  not found") with the source's audit row shape.
+- Dropped test members (recorded in the file map): `test_query.py` loses
+  `test_query_schemas_have_no_tenant_selectors_and_are_not_tools`
+  (`_TOOLS`/schemas internals); `test_ranking.py` loses
+  `test_assembler_query_text_reorders_personal_section` (assembler not yet
+  ported). Both surfaces are re-covered by later tasks' tests.
+- Forced delta flagged: the `bench/QUALITY_CRITERIA.md` file that
+  `test_score_locality.test_quality_criteria_document_covers_cluster_b`
+  asserts on does not exist until the bench task lands, so the member is
+  guarded by `skipUnless` rather than deleted; it turns into a real
+  assertion automatically once the file is ported.
 
 ### T2 notes
 
