@@ -68,11 +68,13 @@ carries the rationale.
 | `tools/hygiene_allowlist.txt` | — (new) | — | added | allowlist for the intentional retained markers listed in the table below |
 | `docs/adr/0002-core-boundary.md` | — (new) | — | added | boundary ADR recording the approved v1 extraction boundary (T1 draft; finalized in T11) |
 | `docs/PROVENANCE.md` | — (new) | — | added | this file; the file-for-file provenance map to `f0f6908` (T1 draft, completed in T6, finalized in T11) |
-| `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`) |
+| `pyproject.toml` | `plugins/personal_memory/requirements.txt` | `f0f6908` | adapted | packaging metadata replaces the source requirements file; dependency declared as `cryptography>=42` (the source pinned `cryptography==50.0.0`); T9 sets the optional extra pin `mcp>=1.12` and adds the `agent-personal-memory-mcp` console script |
 | `LICENSE` | — (new) | — | added | MIT license, holder `samohod4ik` |
 | `README.md` | — (new) | — | added | canonical README stub (T1; full content lands in T11) |
 | `README.ru.md` | — (new) | — | added | RU README stub (T1; mirror lands in T11) |
 | `.gitignore` | — (new) | — | added | repo baseline file extended in T1 with extraction ignores (`.delivery/`, `.env*`, `*.db`, `.venv`, `bench/results/`) |
+| `src/agent_personal_memory/mcp.py` | — (new) | — | added | new standalone surface, no source counterpart; wraps the `confirmation.py` gate — thin stdio MCP facade binding the startup-provisioned Actor/SessionBinding into every `tools/call` (tool args carry no identity fields; extra keys rejected); destructive tools deliver the nonce-bearing preview to an operator-only outbox `<data_dir>/confirmations.jsonl` + stderr notice via `make_outbox_send`, then `personal_memory_confirm` consumes it against the fixed binding/store; `mcp` SDK imported lazily and adapted across the 1.x decorator and 2.x constructor APIs |
+| `tests/test_mcp_stdio.py` | — (new) | — | added | always-on pure-Python members (flag/binding validation, outbox transport, dispatch wiring, preview→outbox→confirm nonce flow, wrong-nonce/binding-mismatch/extra-key denials, failed-send fail-closed); stdio JSON-RPC subprocess members gated on the installed `[mcp]` extra |
 | `bench/corpus.json` | `evals/personal-memory-bench/corpus.json` | `f0f6908` | ported | none — verbatim; exactly 10 cases (5 categories × ru/en: acl, deleted, stale, contradictory, bilingual) |
 | `bench/cases/abstention_unknown.json` | `evals/personal-memory-bench/cases/abstention_unknown.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub (no `corpus_version`/`cases`, rejected by `load_corpus`) |
 | `bench/cases/honest_zero_absent.json` | `evals/personal-memory-bench/cases/honest_zero_absent.json` | `f0f6908` | ported | none — verbatim; non-corpus falsifier stub |
@@ -277,6 +279,41 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   `_TOOLS`/register mem0 check ×1 (test_mem0_shadow), travel-section
   members ×3 (test_assembler). Adapted (renamed) members: 2 in
   test_learn, 1 in test_export_ux, 4 in test_ux, 3 in test_assembler.
+
+### T9 notes
+
+- `mcp.py` is new code with no `f0f6908` counterpart: it only wires the
+  canonical `TOOL_SCHEMAS` surface to the owner-flow API. Zero memory logic
+  is duplicated — dispatch is `getattr(agent_personal_memory, <tool>)` with
+  `actor`/`store`/`session_binding` bound from startup config.
+- The five binding flags (`--actor-platform`, `--actor-user-id`,
+  `--session-key`, `--session-id`, `--chat-id`) are required: `build_binding`
+  validates non-empty values plus the gate's own `_binding_complete` rule, so
+  a missing or placeholder binding fails at startup (exit 2), never silently.
+- Confirm-gate transport over MCP folds the source's "user opens the preview
+  via `/memory_delete <request-id>`" step into the preview tool call: after
+  `create_delete_preview` the facade immediately calls
+  `CONFIRM_REGISTRY.open_preview(request_id, binding, send=...)` with an
+  outbox transport appending `{"ts", "request_id", "body"}` lines to
+  `<data_dir>/confirmations.jsonl` and printing a nonce-free notice to
+  stderr. Tool results are scrubbed of nonce-shaped keys defensively; the
+  nonce can only reach `personal_memory_confirm` via the operator reading
+  the outbox, preserving the two-phase guarantee end to end.
+- `mcp` stays an optional extra (`mcp>=1.12`). `build_sdk_server` adapts to
+  both SDK generations: 1.x decorator registration
+  (`@server.list_tools()`/`@server.call_tool()`, exceptions → isError) and
+  2.x constructor handlers (`on_list_tools`/`on_call_tool` returning
+  `ListToolsResult`/`CallToolResult`). Without the extra,
+  `python -m agent_personal_memory.mcp` prints a pip-install hint to stderr
+  and exits 2; `--help` works without it.
+- CI install step now uses `pip install ".[mcp]"` so the stdio subprocess
+  members run for real (the workflow comment anticipated the T9 extra).
+- `tests/test_mcp_stdio.py` covers: flag/binding validation, JSONL outbox
+  shape `{ts, request_id?, body}`, nonce never in tool results or stderr,
+  remember→list→forget→outbox→confirm erasure, wrong-nonce and
+  binding-mismatch denials (mismatched consume does not burn the nonce),
+  extra/identity-field rejection, unknown/missing-arg/non-dict rejection,
+  failed-send fail-closed behaviour, and `python -m` startup refusal.
 
 ### T2 notes
 
