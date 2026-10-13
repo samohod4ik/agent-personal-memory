@@ -175,6 +175,13 @@ learn_from_turn(actor, "call me Alex; I live in Lisbon", store=store)
 bundle = assemble_context(actor, memory_store=store, query_text="schedule")
 ```
 
+Every call takes an explicit `store`: `store=None` (the signature default)
+opens — and creates if missing — the default data dir
+(`PERSONAL_MEMORY_DATA_DIR`, else `~/.agent-personal-memory`). That is fine
+for one-shot CLI use, but in embedded use a forgotten `store=` silently
+targets the host's default location instead of the intended store — always
+pass the constructed `PersonalMemoryStore` explicitly.
+
 Destructive flows additionally need a fixed `SessionBinding` provisioned by
 the host:
 

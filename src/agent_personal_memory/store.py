@@ -324,7 +324,11 @@ class PersonalMemoryStore:
 
     def __init__(self, data_dir: str | Path | None = None) -> None:
         self.data_dir = Path(data_dir or default_data_dir())
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # Restrictive mode on a directory we create so the db/wal/outbox
+        # inside inherit owner-only custody; a pre-existing user dir keeps
+        # its mode (no chmod of foreign dirs), and non-POSIX filesystems
+        # harmlessly ignore the mode bits.
+        os.makedirs(str(self.data_dir), mode=0o700, exist_ok=True)
         self.db_path = self.data_dir / "personal_memory.db"
         self.key_path = self.data_dir / "master.key"
         self._kek = ensure_master_key(self.key_path)
@@ -1929,10 +1933,18 @@ class PersonalMemoryStore:
                     newest = self._newest_claim_version(
                         conn, tenant_id, str(row["id"])
                     )
+            # Mirror get_authorized_claim's invisibility rules exactly:
+            # restricted and expired claims are byte-identical "not found".
+            now = utcnow_iso()
             if (
                 row is None
                 or newest is None
                 or str(newest["state"]) == MemoryState.DELETED
+                or str(newest["sensitivity"]) == "restricted"
+                or (
+                    newest["expires_at"] is not None
+                    and str(newest["expires_at"]) <= now
+                )
             ):
                 self._deny_claim(conn, tenant_id=tenant_id, action="claim.explain")
                 pending_error = NotFoundError("Claim not found")

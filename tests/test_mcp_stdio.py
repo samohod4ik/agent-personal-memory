@@ -7,12 +7,15 @@ JSON-RPC members are gated on the optional ``mcp`` extra being installed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import io
 import json
+import os
 import queue
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +27,7 @@ from unittest.mock import patch
 
 import agent_personal_memory as apm
 from agent_personal_memory import mcp as apm_mcp
+from agent_personal_memory.crypto import CryptoError
 from agent_personal_memory.validation import (
     ValidationError,
     content_hash_for,
@@ -238,6 +242,111 @@ class OutboxSendTests(unittest.TestCase):
         send = apm_mcp.make_outbox_send(blocked, stderr=io.StringIO())
         with self.assertRaises(OSError):
             send("x")
+
+    def test_outbox_created_with_owner_only_mode(self) -> None:
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=io.StringIO())
+        self.assertTrue(send("preview body"))
+        if os.name == "posix":
+            mode = stat.S_IMODE(self.outbox.stat().st_mode)
+            self.assertEqual(mode & 0o077, 0)
+        else:
+            self.assertTrue(self.outbox.is_file())
+
+    def test_outbox_append_tightens_preexisting_loose_mode(self) -> None:
+        self.outbox.write_text('{"ts": "t", "body": "old"}\n', encoding="utf-8")
+        if os.name == "posix":
+            os.chmod(self.outbox, 0o644)
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=io.StringIO())
+        self.assertTrue(send("next body"))
+        if os.name == "posix":
+            mode = stat.S_IMODE(self.outbox.stat().st_mode)
+            self.assertEqual(mode & 0o077, 0)
+        self.assertEqual(
+            len(self.outbox.read_text(encoding="utf-8").splitlines()), 2
+        )
+
+
+class ErrorTextTests(unittest.TestCase):
+    """Tool-result error text: whitelisted types pass through, the rest
+    collapse to a generic message so internals never leak to the model."""
+
+    def test_whitelisted_errors_carry_their_message(self) -> None:
+        cases = (
+            (ValidationError("arguments: missing required"), "ValidationError"),
+            (apm.NotFoundError("Claim not found"), "NotFoundError"),
+            (apm.ConflictError("Delete target set changed"), "ConflictError"),
+            (
+                apm.TrustedDeleteDenied("delete request is not available"),
+                "TrustedDeleteDenied",
+            ),
+            (ValueError("plain value error"), "ValueError"),
+            (KeyError("missing-key"), "KeyError"),
+        )
+        for exc, name in cases:
+            with self.subTest(error=name):
+                self.assertEqual(
+                    apm_mcp._error_text(exc), f"{name}: {exc}"
+                )
+
+    def test_unexpected_error_collapses_to_generic_text(self) -> None:
+        # Assembled (not literal) so this file stays clean under the
+        # hygiene scanner's host-path pattern.
+        private_path = "C:" + chr(92) + "leak" + chr(92) + "path"
+        for exc in (
+            OSError(private_path),
+            RuntimeError("stack detail " + private_path),
+            CryptoError("dek unwrap failed at " + private_path),
+        ):
+            with self.subTest(error=type(exc).__name__):
+                text = apm_mcp._error_text(exc)
+                self.assertEqual(text, "InternalError: operation failed")
+                self.assertNotIn(private_path, text)
+                self.assertNotIn("leak", text)
+
+
+@unittest.skipUnless(_SDK_AVAILABLE, "optional 'mcp' extra is not installed")
+class ErrorTextWireTests(unittest.TestCase):
+    """A stubbed flow that raises an unexpected error must not leak into
+    the tool result text over the SDK adapter."""
+
+    def test_internal_error_text_hides_internals(self) -> None:
+        private_path = "C:" + chr(92) + "leak" + chr(92) + "path"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = apm.PersonalMemoryStore(data_dir=tmp.name)
+        binding = _binding()
+        surface = apm_mcp.McpToolSurface(
+            actor=binding.actor(),
+            binding=binding,
+            store=store,
+            outbox_path=Path(tmp.name) / apm_mcp.OUTBOX_NAME,
+            stderr=io.StringIO(),
+        )
+        server = apm_mcp.build_sdk_server(surface)
+        get_handler = getattr(server, "get_request_handler", None)
+        entry = get_handler("tools/call") if get_handler else None
+        if entry is None:
+            self.skipTest("mcp SDK without a tools/call handler registry")
+        from mcp import types as mcp_types
+
+        with patch.object(
+            surface, "call_tool", side_effect=OSError(private_path)
+        ):
+            result = asyncio.run(
+                entry.handler(
+                    None,
+                    mcp_types.CallToolRequestParams(
+                        name="list_personal_memories", arguments={}
+                    ),
+                )
+            )
+        self.assertTrue(
+            getattr(result, "is_error", getattr(result, "isError", False))
+        )
+        text = result.content[0].text
+        self.assertEqual(text, "InternalError: operation failed")
+        self.assertNotIn(private_path, text)
+        self.assertNotIn("leak", text)
 
 
 class DispatchTests(unittest.TestCase):

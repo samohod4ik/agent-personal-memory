@@ -14,9 +14,26 @@ plugins\.personal-memory	logger name prefix retained verbatim for log-source par
 telegram:(?!\d)	external_ref label shape `telegram:{label}:{digest}` kept in types.py/mutations.py for record-format compatibility; numeric `telegram:<id>` forms stay flagged
 hermes-pm-bench-	temp-dir prefix retained in ported bench runner code
 PRODUCTION_MARKERS\s*=\s*\([^)\n]*\)	bench self-test fixture tuple (bench/test_bench_runner.py) embedding host-path marker strings to assert non-leakage
-OPAQUE_SECRET	synthetic fixture in ported tests/test_validation.py that exercises opaque-secret detection; not a real credential
+OPAQUE_SECRET\s*=\s*"AbCdEf0123456789AbCdEf0123456789AbCdEf0123456789"	exact synthetic fixture literal in ported tests/test_validation.py exercising opaque-secret detection; the same value under any other name stays flagged
 AKIAIOSFODNN7EXAMPLE	the AWS documentation example access-key id, reused verbatim as a synthetic validator fixture
 Bearer ya29\.abcdefghijklmnop	the Google documentation example bearer token, reused verbatim as a synthetic validator fixture
 eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk	the jwt.io example token, reused verbatim as a synthetic validator fixture
 ["']-----BEGIN RSA PRIVATE KEY-----["']	bare quoted RSA PEM-header literal is a synthetic validator fixture; a real PEM leaks key material beyond the quoted header line and stays flagged
-`[^`]*(?:pre_gateway_dispatch|miniapp_|night_cycle1|peer_import|travel_compute|plugin\.yaml|spikes|HERMES_HOME|F:[\\/]Hermes)[^`]*`	backticked names of not-ported host modules and dropped host defaults in the PROVENANCE file map and ADR-0002 boundary record — doc-only mentions of what stays in Hermes
+# Backticked doc-only mentions of not-ported host modules and dropped host
+# defaults (PROVENANCE file map / retained-strings table, ADR-0002). Each
+# entry is anchored to the exact backticked literal — a backtick span that
+# mixes a marker with anything else (e.g. a real secret) stays flagged.
+`HERMES_HOME`	bare name of the removed host env-var default
+`F:\\Hermes`	bare dropped host data-root default
+`F:\\Hermes\\data\\personal-memory`	full dropped host data-dir default (store.py file-map row)
+`pre_gateway_dispatch`	bare name of the not-ported host dispatch hook
+`peer_import`	bare name of the not-ported host module
+`travel_compute`	bare name of the not-ported host compute module
+`plugin\.yaml`	bare name of the not-ported host manifest
+`spikes`	bare name of the not-ported spike directory
+`spikes/`	bare name of the not-ported spike directory (ADR-0002 trailing-slash form)
+`miniapp_\*`	bare wildcard name of the not-ported miniapp module family
+`night_cycle1…`	bare name of the not-ported night-cycle module (retained-strings table ellipsis form)
+`night_cycle1_tool_descriptions`	bare name of the not-ported night-cycle module (ADR-0002)
+`travel_compute_bridge\.py`	bare basename of the not-ported travel compute bridge (PROVENANCE not-ported table)
+`plugins/personal_memory/(?:miniapp_contract\.py|miniapp_handlers\.py|night_cycle1_tool_descriptions\.py|peer_import\.py|plugin\.yaml|spikes/|tests/test_miniapp_api\.py|tests/test_miniapp_contract\.py|tests/test_miniapp_handlers\.py|tests/test_travel_compute_bridge\.py|tests/spikes/test_sqlcipher_spike\.py)`	full source paths of not-ported host files in the PROVENANCE file map — exact literals only

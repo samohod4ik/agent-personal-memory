@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,43 @@ _BINDING_FLAGS = (
 
 # Defensive: a nonce-shaped key must never reach a tool result.
 _NONCE_KEYS = frozenset({"nonce", "confirm_nonce", "confirmation_nonce"})
+
+# Exception names whose message may appear in a tool result: known
+# library/argument failures. Anything else collapses to a generic text so
+# host paths and unexpected internals never reach the model channel (the
+# MRO walk also covers subclasses like TrustedDeleteDenied).
+_SAFE_ERROR_NAMES = frozenset(
+    {
+        "ValidationError",
+        "NotFoundError",
+        "ConflictError",
+        "ForbiddenError",
+        "TrustedDeleteDenied",
+        "ValueError",
+        "KeyError",
+    }
+)
+
+
+def _error_text(exc: Exception) -> str:
+    """Tool-result text for a failed call.
+
+    Whitelisted exception types carry ``TypeName: message``; everything
+    else becomes a generic internal-error line — an unexpected failure can
+    carry host paths or other internals in ``str(exc)``.
+    """
+    if any(cls.__name__ in _SAFE_ERROR_NAMES for cls in type(exc).__mro__):
+        return f"{type(exc).__name__}: {exc}"
+    return "InternalError: operation failed"
+
+
+def _tighten_file_mode(path: Path) -> None:
+    """Best-effort ``chmod 0600``; tolerated to no-op where the FS or OS
+    ignores POSIX modes (e.g. some Windows filesystems)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,15 +198,23 @@ def make_outbox_send(
     path = Path(outbox_path)
 
     def send(text: str) -> bool:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(str(path.parent), mode=0o700, exist_ok=True)
         record: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "body": text,
         }
         if request_id:
             record["request_id"] = str(request_id)
-        with path.open("a", encoding="utf-8") as handle:
+        # The outbox holds plaintext preview + a live nonce: keep it at
+        # 0600 custody — tighten a pre-existing loose file, create with
+        # 0600, then tighten again in case the file was recreated between.
+        _tighten_file_mode(path)
+        fd = os.open(
+            str(path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _tighten_file_mode(path)
         target = sys.stderr if stderr is None else stderr
         suffix = f" for request {request_id}" if request_id else ""
         print(
@@ -405,13 +451,11 @@ def build_sdk_server(surface: McpToolSurface) -> Any:
             for entry in tool_defs
         ]
 
-    def _error_text(exc: Exception) -> str:
-        return f"{type(exc).__name__}: {exc}"
-
     if hasattr(Server, "call_tool"):
         # mcp 1.x: decorator registration. A dict return becomes structured
         # content plus a JSON text block; a raised exception becomes an
-        # isError result.
+        # isError result whose text is str(exc) — so route it through
+        # _error_text to keep unexpected internals out of the tool result.
         server = Server(SERVER_NAME, version=apm.__version__)
 
         @server.list_tools()
@@ -420,7 +464,10 @@ def build_sdk_server(surface: McpToolSurface) -> Any:
 
         @server.call_tool()
         async def _call_tool(name: str, arguments: Any = None) -> Any:
-            payload = surface.call_tool(name, arguments or {})
+            try:
+                payload = surface.call_tool(name, arguments or {})
+            except Exception as exc:
+                raise RuntimeError(_error_text(exc)) from exc
             if isinstance(payload, dict):
                 return payload
             return [

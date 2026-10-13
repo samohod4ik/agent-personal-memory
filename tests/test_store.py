@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 import tempfile
 import unittest
 from dataclasses import fields
@@ -90,6 +92,17 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             self.assertIn("trg_source_versions_tenant_update", triggers)
         finally:
             conn.close()
+
+    def test_created_data_dir_has_owner_only_mode(self) -> None:
+        # A data dir WE create starts 0700 so the db/wal/outbox inside
+        # inherit owner-only custody; a pre-existing user dir is not chmod'd.
+        target = self.data_dir / "created-store"
+        PersonalMemoryStore(data_dir=target)
+        if os.name == "posix":
+            mode = stat.S_IMODE(target.stat().st_mode)
+            self.assertEqual(mode & 0o077, 0)
+        else:
+            self.assertTrue(target.is_dir())
 
     def test_reopen_is_idempotent_for_schema_and_principals(self) -> None:
         first = PersonalMemoryStore(data_dir=self.data_dir)
