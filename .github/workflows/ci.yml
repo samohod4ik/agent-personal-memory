@@ -9,6 +9,10 @@ on:
     branches:
       - main
 
+# Least privilege: the workflow only checks out code and runs tests.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
