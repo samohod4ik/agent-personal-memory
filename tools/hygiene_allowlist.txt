@@ -13,7 +13,7 @@ hermes\.personal_memory\.lookup\.v1	crypto HKDF/AAD lookup identifier retained v
 plugins\.personal-memory	logger name prefix retained verbatim for log-source parity with the source
 telegram:(?!\d)	external_ref label shape `telegram:{label}:{digest}` kept in types.py/mutations.py for record-format compatibility; numeric `telegram:<id>` forms stay flagged
 hermes-pm-bench-	temp-dir prefix retained in ported bench runner code
-PRODUCTION_MARKERS\s*=\s*\([^)\n]*\)	bench self-test fixture tuple (bench/test_bench_runner.py) embedding host-path marker strings to assert non-leakage
+PRODUCTION_MARKERS\s*=\s*\("F:\\\\Hermes\\\\data",\s*"F:/Hermes/data"\)	exact bench self-test fixture literal (bench/test_bench_runner.py) embedding host-path marker strings to assert non-leakage; any other content inside the parens stays flagged
 OPAQUE_SECRET\s*=\s*"AbCdEf0123456789AbCdEf0123456789AbCdEf0123456789"	exact synthetic fixture literal in ported tests/test_validation.py exercising opaque-secret detection; the same value under any other name stays flagged
 AKIAIOSFODNN7EXAMPLE	the AWS documentation example access-key id, reused verbatim as a synthetic validator fixture
 Bearer ya29\.abcdefghijklmnop	the Google documentation example bearer token, reused verbatim as a synthetic validator fixture

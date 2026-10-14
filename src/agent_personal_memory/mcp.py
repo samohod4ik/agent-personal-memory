@@ -21,6 +21,7 @@ import asyncio
 import base64
 import json
 import os
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,8 +91,11 @@ def _error_text(exc: Exception) -> str:
 
 def _tighten_file_mode(path: Path) -> None:
     """Best-effort ``chmod 0600``; tolerated to no-op where the FS or OS
-    ignores POSIX modes (e.g. some Windows filesystems)."""
+    ignores POSIX modes (e.g. some Windows filesystems). A symlink is never
+    followed - the nonce-bearing outbox must not retarget another file."""
     try:
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return
         os.chmod(path, 0o600)
     except OSError:
         pass
@@ -209,9 +213,9 @@ def make_outbox_send(
         # 0600 custody — tighten a pre-existing loose file, create with
         # 0600, then tighten again in case the file was recreated between.
         _tighten_file_mode(path)
-        fd = os.open(
-            str(path), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600
-        )
+        flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), flags, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         _tighten_file_mode(path)
