@@ -490,7 +490,7 @@ Round-2 security re-review (`ONLY_MINOR`, three residual edges) resolved:
 
 ### T2 notes
 
-- All crypto/erasure invariants are byte-faithful to `f0f6908`: AES-GCM-256,
+- All crypto/erasure invariants are byte-faithful to `f0f6908`: AES-256-GCM,
   per-record DEKs wrapped by the file KEK (`<data_dir>/master.key`), AAD
   binding tenant/entity/version/field, WAL + `secure_delete` + foreign-key
   pragmas, `BEGIN IMMEDIATE` writes, v1→v4 in-place migrations, and physical
