@@ -8,12 +8,12 @@ license: MIT
 
 ## What it is
 
-`agent_personal_memory` is a local-first, encrypted personal memory for AI
-agents: a single-owner SQLite store where records are encrypted at rest
-with AES-GCM-256 (per-record data keys wrapped by a file-held master key),
+`agent_personal_memory` is local-first, encrypted personal memory for AI
+agents — a single-owner SQLite store where records are encrypted at rest
+with AES-256-GCM (per-record data keys wrapped by a file-held master key),
 every read is tenant-scoped and authorized before decrypt, and deletion is
 physical rather than a soft flag. It ships as a Python library — the
-canonical public surface is `agent_personal_memory/__init__.py` — and as an
+canonical public surface is `src/agent_personal_memory/__init__.py` — and as an
 optional thin MCP stdio server (`agent-personal-memory-mcp`, or
 `python -m agent_personal_memory.mcp`, under the `mcp` extra).
 
@@ -126,7 +126,7 @@ Hard rules:
 - A model-supplied `confirm`/`confirmed` boolean can never authorize
   deletion; the library enforces this with `reject_legacy_confirm`.
 - Nonces are one-time, TTL-bound (600 s), and bound to the exact
-  `SessionBinding`; wrong-actor, wrong-session, replayed and expired
+  `SessionBinding`; wrong-actor, wrong-session, replayed, or expired
   attempts are all denied.
 
 ### Operator outbox flow under MCP
@@ -145,7 +145,7 @@ fields and the outbox `body` are ported verbatim from the library, so they
 still mention `/memory_delete <request_id>` and
 `/memory_cancel <request_id>` — source-host commands that do not exist on
 this MCP surface. The mapping is: `/memory_delete <request_id>` ("open the
-exact preview") is already done — the outbox line IS the delivery, and the
+exact preview") is already done — the outbox line *is* the delivery, and the
 operator reads the nonce from `<data_dir>/confirmations.jsonl` and calls
 `personal_memory_confirm`; `/memory_cancel <request_id>` maps to simply
 ignoring the preview — the nonce expires on its own via the registry TTL
@@ -214,7 +214,7 @@ result = consume_delete_request(record, store=store)
 
 ## Running the MCP server
 
-```
+```bash
 pip install "agent-personal-memory[mcp]"
 
 agent-personal-memory-mcp \
@@ -243,7 +243,7 @@ never carry identity fields — extra keys are rejected.
 | `reject_candidate_memory` | Preview the erasure of a candidate (confirm-gate) |
 | `list_personal_memories` | Owner-facing inventory ("what do you remember?") |
 | `query_claims` / `query_sources` | Authorized metadata queries (filters run before any decrypt) |
-| `get_authorized_claim` / `get_authorized_source` | Single-entity reads; missing, foreign and erased ids are identical not-found |
+| `get_authorized_claim` / `get_authorized_source` | Single-entity reads; missing, foreign, and erased ids are identical not-found |
 | `rank_claims` | Deterministic lexical/entity/recency ranking over authorized claims |
 | `assemble_context` | Bounded personal+session context bundle for a prompt |
 | `explain_why_remembered` / `explain_claim` | Provenance and lifecycle explanations (EN/RU) |

@@ -17,7 +17,7 @@ server, no network call, and no telemetry.
   source snapshot/locator/metadata) is AES-256-GCM-encrypted with a fresh
   random per-record DEK wrapped by the file KEK. Ciphertext is bound by AAD
   to tenant / entity / version / field, so swapping a blob between records
-  fails authenticated decryption. Source `external_ref`s are stored as
+  fails authenticated decryption. Source `external_ref` values are stored as
   keyed HMAC lookup hashes.
 - **Explicit identity.** Every call takes an `Actor(platform, user_id,
   display_name)` constructed by the host; nothing reads ambient session
@@ -26,7 +26,7 @@ server, no network call, and no telemetry.
 - **Confirm-gated destructive operations.** Forgetting is two-phase: the
   model-facing call produces only a non-authorizing preview; the one-time
   nonce is generated inside the gate, delivered over an injected operator
-  channel, and is single-use, TTL-bound, and bound to the exact
+  channel, and is single-use, TTL-bound, and tied to the exact
   `SessionBinding`. A model-supplied `confirm` boolean is rejected.
 - **Physical erasure.** Confirmed deletion destroys the wrapped DEKs and
   encrypted blobs, drops support edges and FTS rows, compacts the database,
@@ -51,7 +51,7 @@ Requires Python 3.10+. The sole runtime dependency is `cryptography>=42`.
 ```bash
 pip install .            # from a checkout
 pip install ".[mcp]"     # with the optional MCP server
-# or straight from the (private) repository if you have access:
+# or straight from the repository if you have access:
 pip install "git+ssh://git@github.com/samohod4ik/agent-personal-memory.git"
 ```
 
@@ -225,7 +225,7 @@ landscape review; this space moves fast.
 
 Honest trade-offs: this package does **no** semantic/vector search and no
 LLM-driven extraction (ranking is lexical/BM25, extraction is rule-based
-EN/RU), and has no graph memory and no managed tier. Choose it when the
+EN/RU), and neither graph memory nor a managed tier. Choose it when the
 priority is a small auditable dependency surface (one runtime dependency),
 ciphertext at rest, and human-confirmed deletion — not recall breadth.
 
@@ -255,7 +255,7 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
 Core extracted from the host project's `plugins/personal_memory` package at
 source snapshot `f0f6908` under the extraction boundary recorded in
 [docs/adr/0002-core-boundary.md](docs/adr/0002-core-boundary.md). Every
-ported file, its source path, and every deviation is mapped in
+ported file, its source path, and every deviation are mapped in
 [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
 License: [MIT](LICENSE) — Copyright (c) 2026 samohod4ik.

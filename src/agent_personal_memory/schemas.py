@@ -479,7 +479,7 @@ GET_MEMORY_MODE_SCHEMA = {
     "description": (
         "Return the current session owner's personal-memory mode. "
         "Default is auto_insight (quietly learn durable facts from chat). "
-        "confirm_required keeps ADR 0007 candidate-only chat writes."
+        "confirm_required stores chat writes as candidates only."
     ),
     "parameters": {
         "type": "object",

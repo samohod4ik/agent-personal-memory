@@ -30,7 +30,7 @@ boundary) and [adr/0008-physical-erasure-and-tombstones.md](adr/0008-physical-er
   that is what the confirm-gate is for.
 - **Other principals** — additional `Actor`s sharing one store. Tenant
   isolation is enforced at the query layer: a foreign tenant's records are
-  indistinguishable from absent ones (identical `NotFoundError`, byte-equal
+  indistinguishable from absent ones (identical `NotFoundError`, byte-identical
   denial payloads).
 - **Host process** — the application embedding the library. It is fully
   trusted: it chooses the `Actor` it passes, holds the KEK while running,
@@ -101,7 +101,7 @@ It does **not** guarantee:
 
 - removal from backups, filesystem snapshots, or OS-level copies taken
   before the erasure — those may retain ciphertext until your retention
-  policy expires them (see *KEK custody* — ciphertext without destroyed
+  policy removes them (see *KEK custody* — ciphertext without destroyed
   DEKs is still protected, but ciphertext in a backup made while the DEK
   was live is only as safe as that backup's KEK story);
 - overwriting of every physical remnant — wear-leveling, page/swap
@@ -127,7 +127,7 @@ Mechanism:
    returns truthy. A raised exception, a falsy return, or an awaitable
    return is a failed send — no live nonce. Because the payload text is the
    exact preview, the operator confirms *this* deletion, not a paraphrase.
-3. `consume_confirm(nonce, binding)` requires the nonce plus a byte-equal
+3. `consume_confirm(nonce, binding)` requires the nonce plus a byte-identical
    `SessionBinding` (platform, user_id, session_key, session_id, chat_id,
    thread_id, profile). Nonces are single-use and expire after 600 s. An
    observer who merely sees a delivered preview in a shared channel cannot
@@ -173,8 +173,8 @@ secret file (0600-equivalent custody).
   outcome/reason — no content), lifecycle fields, timestamps, principal
   ids, and the deletion manifest are unencrypted. These leak existence and
   activity patterns, not contents.
-- **`confirmations.jsonl` (MCP) holds nonce-bearing text** until the TTL
-  expires the corresponding nonce; old lines are not garbage-collected.
+- **`confirmations.jsonl` (MCP) holds nonce-bearing text** until the
+  corresponding nonce's TTL expires; old lines are not garbage-collected.
   They authorize nothing after expiry, but they do contain preview text of
   what was about to be deleted.
 - **No multi-user UX or service hardening.** No authentication server, no

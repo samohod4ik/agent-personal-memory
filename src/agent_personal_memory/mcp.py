@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Deletion previews are delivered to the operator outbox "
-            "<data-dir>/confirmations.jsonl (plus a stderr notice); the "
+            "<data_dir>/confirmations.jsonl (plus a stderr notice); the "
             "one-time nonce never appears in a tool result. The operator "
             "reads the nonce there and calls personal_memory_confirm."
         ),

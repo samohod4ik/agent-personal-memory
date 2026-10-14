@@ -1,5 +1,8 @@
 # ADR 0008: Physical erasure and tombstones
 
+> Ported verbatim from the source project (snapshot `f0f6908`); task and
+> ADR references that do not exist in this repository are historical.
+
 Status: Accepted
 Date: 2026-09-01
 
