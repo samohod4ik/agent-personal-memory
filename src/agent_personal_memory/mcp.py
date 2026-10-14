@@ -11,7 +11,9 @@ send: ``{"ts", "request_id", "body"}``) plus a short stderr notice. stdout
 carries JSON-RPC only. The one-time nonce exists solely inside the outbox
 payload - never in a tool result - so the model cannot authorize its own
 deletion request; the operator reads the nonce from the outbox and calls
-``personal_memory_confirm`` with it.
+``personal_memory_confirm`` with it. The outbox is a transient delivery
+channel, not an audit log: lines whose nonce TTL horizon has passed are
+pruned on the next successful append.
 """
 
 from __future__ import annotations
@@ -28,12 +30,17 @@ from pathlib import Path
 from typing import Any, Callable
 
 import agent_personal_memory as apm
-from .confirmation import _binding_complete
+from .confirmation import _REQUEST_TTL_SECONDS, _binding_complete
 from .store import PersonalMemoryStore
 from .validation import ValidationError
 
 SERVER_NAME = "agent-personal-memory"
 OUTBOX_NAME = "confirmations.jsonl"
+
+# Outbox retention horizon: the nonce TTL plus a small clock-skew margin.
+# Lines whose ``ts`` predates it hold only dead nonces, so they are pruned
+# on the next successful append instead of accumulating forever.
+_OUTBOX_RETAIN_SECONDS = _REQUEST_TTL_SECONDS + 100.0
 INSTALL_HINT = (
     "the MCP server requires the optional 'mcp' extra - "
     'install with: pip install "agent-personal-memory[mcp]"'
@@ -99,6 +106,73 @@ def _tighten_file_mode(path: Path) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def _outbox_line_expired(line: str, cutoff: float) -> bool:
+    """True only for a well-formed record line whose ``ts`` predates the
+    retention horizon. Lines that do not parse (missing/invalid ``ts``,
+    non-JSON) are kept - the outbox may hold data this transport did not
+    write, and pruning must not silently drop it."""
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return False
+    stamp = record.get("ts") if isinstance(record, dict) else None
+    if not isinstance(stamp, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp() < cutoff
+
+
+def _prune_outbox(path: Path, *, stderr: Any = None) -> None:
+    """Best-effort TTL prune of the outbox after a successful append.
+
+    Reads the file (``O_NOFOLLOW`` where available so a swapped-in symlink
+    is not followed) and rewrites it via a sibling temp file created 0600
+    + ``O_NOFOLLOW``; ``os.replace`` means the existing destination keeps
+    working throughout. Any failure is reported on stderr and swallowed —
+    the nonce was already delivered, so a prune error must never fail the
+    send.
+    """
+    target = sys.stderr if stderr is None else stderr
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    try:
+        cutoff = (
+            datetime.now(timezone.utc).timestamp() - _OUTBOX_RETAIN_SECONDS
+        )
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        dropped = 0
+        kept: list[str] = []
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if _outbox_line_expired(line, cutoff):
+                    dropped += 1
+                else:
+                    kept.append(line)
+        if not dropped:
+            return
+        flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(tmp), flags, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.writelines(kept)
+            _tighten_file_mode(tmp)
+            os.replace(tmp, path)
+            _tighten_file_mode(path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        print(f"[{SERVER_NAME}] outbox prune skipped: {exc}", file=target)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -197,7 +271,10 @@ def make_outbox_send(
     Appends one JSON line ``{"ts", "request_id"?, "body"}`` to
     ``outbox_path`` and prints a short notice to stderr (the nonce-bearing
     body is never printed). A failed write raises so ``open_preview``
-    denies nonce registration - the send fails closed.
+    denies nonce registration - the send fails closed. After a successful
+    append the file is pruned: lines whose ``ts`` has passed the nonce TTL
+    horizon are dropped (see ``_prune_outbox``), keeping the outbox a
+    transient delivery channel rather than a growing plaintext log.
     """
     path = Path(outbox_path)
 
@@ -219,6 +296,9 @@ def make_outbox_send(
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         _tighten_file_mode(path)
+        # The append succeeded (the nonce is delivered): prune dead
+        # nonce-bearing lines so plaintext previews do not accumulate.
+        _prune_outbox(path, stderr=stderr)
         target = sys.stderr if stderr is None else stderr
         suffix = f" for request {request_id}" if request_id else ""
         print(

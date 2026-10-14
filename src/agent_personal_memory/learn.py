@@ -141,9 +141,9 @@ def learn_from_turn(
     actor: Actor,
     turn_text: str,
     *,
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
 ) -> dict[str, Any]:
-    memory = _memory(store)
+    memory = store
     mode = memory.get_memory_mode(actor)
     if mode != MEMORY_MODE_AUTO_INSIGHT:
         return {
@@ -176,7 +176,7 @@ def remember_personal_insight(
     *,
     claim_kind: object = "confirmed_fact",
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
 ) -> dict[str, object]:
     if not isinstance(content, str) or not content.strip():
         raise ValidationError("content: must be a non-empty string")
@@ -185,7 +185,7 @@ def remember_personal_insight(
         raise ValidationError("content: rejected by memory filters")
     kind = validate_claim_kind(claim_kind) if claim_kind is not None else "confirmed_fact"
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     mode = memory.get_memory_mode(actor)
     existing = _existing_norms(actor, memory)
     created = _persist_insight(

@@ -139,6 +139,8 @@ stderr — stdout carries JSON-RPC only. The operator reads the outbox, finds
 the `/memory_confirm <nonce>` line inside `body`, and calls the
 `personal_memory_confirm` tool with that nonce. The model may call
 `personal_memory_confirm`, but it cannot mint or guess a valid nonce.
+Outbox lines whose nonce TTL (600 s) has passed are pruned on the next
+append — the file is a transient delivery channel, not an audit log.
 
 Command mapping under MCP: the preview `confirmation`/`delete_command`
 fields and the outbox `body` are ported verbatim from the library, so they
@@ -175,12 +177,15 @@ learn_from_turn(actor, "call me Alex; I live in Lisbon", store=store)
 bundle = assemble_context(actor, memory_store=store, query_text="schedule")
 ```
 
-Every call takes an explicit `store`: `store=None` (the signature default)
-opens — and creates if missing — the default data dir
-(`PERSONAL_MEMORY_DATA_DIR`, else `~/.agent-personal-memory`). That is fine
-for one-shot CLI use, but in embedded use a forgotten `store=` silently
-targets the host's default location instead of the intended store — always
-pass the constructed `PersonalMemoryStore` explicitly.
+Mutating owner flows — `remember_personal_insight`, `learn_from_turn`,
+`correct_personal_memory`, `forget_personal_memory`, `do_not_remember`,
+`confirm_candidate_memory`, `reject_candidate_memory` — take `store` as a
+**required** keyword argument: a write can never hit an implicit default.
+Read helpers still default `store` to `None`, which opens — and creates if
+missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
+`~/.agent-personal-memory`); in embedded use always pass the constructed
+`PersonalMemoryStore` explicitly so a forgotten `store=` cannot read the
+host's default location.
 
 Destructive flows additionally need a fixed `SessionBinding` provisioned by
 the host:
