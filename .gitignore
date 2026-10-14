@@ -1,6 +1,6 @@
 .delivery/
 AGENTS.local.md
-.devin/config.local.json
+.devin/
 .env
 .env.*
 __pycache__/
