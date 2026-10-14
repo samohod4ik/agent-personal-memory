@@ -1,0 +1,64 @@
+{
+  "id": "score_locality_falsifier",
+  "criterion_id": "C-SCORE-LOC",
+  "category_note": "checklist fixture; not a corpus.json category. Freeze A rows+query; mutate only B corpus; compare ids, scores, and order separately.",
+  "expect": "score_invariant",
+  "actors": {
+    "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"},
+    "bob": {"platform": "t", "user_id": "2", "display_name": "Bob"}
+  },
+  "seed": {
+    "sources": [
+      {
+        "alias": "alice_doc",
+        "actor": "alice",
+        "source_kind": "document",
+        "external_ref": "ref-alice-score-loc",
+        "snapshot": "alice raretoken preference notes",
+        "observed_at": "2026-08-31T10:00:00Z",
+        "retention_class": "standard",
+        "metadata": {"title": "Alice notes", "language": "en"}
+      },
+      {
+        "alias": "bob_doc",
+        "actor": "bob",
+        "source_kind": "document",
+        "external_ref": "ref-bob-score-loc",
+        "snapshot": "bob raretoken filler notes",
+        "observed_at": "2026-08-31T10:00:00Z",
+        "retention_class": "standard",
+        "metadata": {"title": "Bob notes", "language": "en"}
+      }
+    ],
+    "claims": [
+      {
+        "alias": "alice_live",
+        "actor": "alice",
+        "claim_kind": "preference",
+        "content": "alice raretoken preference",
+        "confidence": 0.8,
+        "explanation": "frozen A row",
+        "sensitivity": "normal",
+        "source_aliases": ["alice_doc"],
+        "valid_from": "2026-08-01T00:00:00Z",
+        "valid_to": "2026-12-31T23:59:59Z",
+        "expires_at": "2099-01-01T00:00:00Z"
+      },
+      {
+        "alias": "bob_live",
+        "actor": "bob",
+        "claim_kind": "preference",
+        "content": "bob raretoken filler",
+        "confidence": 0.8,
+        "explanation": "B corpus that will be mutated",
+        "sensitivity": "normal",
+        "source_aliases": ["bob_doc"],
+        "valid_from": "2026-08-01T00:00:00Z",
+        "valid_to": "2026-12-31T23:59:59Z",
+        "expires_at": "2099-01-01T00:00:00Z"
+      }
+    ],
+    "mutations": []
+  },
+  "sketch": "Freeze Alice hits and query_text. Add many Bob documents that share raretoken so shared-table DF changes. Re-score Alice only. Compare (1) claim ids, (2) tenant-local scores, (3) order as three columns. Shared DF must not move Alice."
+}

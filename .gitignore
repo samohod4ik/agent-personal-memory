@@ -1,6 +1,6 @@
 .delivery/
 AGENTS.local.md
-.devin/config.local.json
+.devin/
 .env
 .env.*
 __pycache__/
@@ -12,3 +12,6 @@ build/
 .pytest_cache/
 *.db
 *.sqlite*
+
+# bench runner artifacts (embed absolute paths)
+bench/results/

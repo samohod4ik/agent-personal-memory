@@ -1,0 +1,53 @@
+{
+  "id": "rejected_alternatives",
+  "criterion_id": "C-REJECTED",
+  "category_note": "checklist fixture; not a corpus.json category. Explain/export must still list rejected options after compaction.",
+  "expect": "rejected_options_retained",
+  "actors": {
+    "alice": {"platform": "t", "user_id": "1", "display_name": "Alice"}
+  },
+  "seed": {
+    "sources": [
+      {
+        "alias": "alice_doc",
+        "actor": "alice",
+        "source_kind": "document",
+        "external_ref": "ref-alice-reject",
+        "snapshot": "tea versus coffee notes",
+        "observed_at": "2026-08-31T10:00:00Z",
+        "retention_class": "standard",
+        "metadata": {"title": "Drinks", "language": "en"}
+      }
+    ],
+    "claims": [
+      {
+        "alias": "alice_tea",
+        "actor": "alice",
+        "claim_kind": "preference",
+        "content": "prefers tea",
+        "confidence": 0.6,
+        "explanation": "kept candidate",
+        "sensitivity": "normal",
+        "source_aliases": ["alice_doc"],
+        "valid_from": "2026-08-01T00:00:00Z",
+        "valid_to": "2026-12-31T23:59:59Z",
+        "expires_at": "2099-01-01T00:00:00Z"
+      },
+      {
+        "alias": "alice_coffee",
+        "actor": "alice",
+        "claim_kind": "preference",
+        "content": "prefers coffee",
+        "confidence": 0.6,
+        "explanation": "rejected alternative; keep evaluable",
+        "sensitivity": "normal",
+        "source_aliases": ["alice_doc"],
+        "valid_from": "2026-08-01T00:00:00Z",
+        "valid_to": "2026-12-31T23:59:59Z",
+        "expires_at": "2099-01-01T00:00:00Z"
+      }
+    ],
+    "mutations": []
+  },
+  "sketch": "Coffee is rejected/superseded; tea remains live. Default retrieval must not re-promote coffee. Explain/export after compaction still names alice_coffee as a rejected alternative. Rejection is not forget."
+}
