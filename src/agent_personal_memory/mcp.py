@@ -137,7 +137,10 @@ def _prune_outbox(path: Path, *, stderr: Any = None) -> None:
     + ``O_NOFOLLOW``; ``os.replace`` means the existing destination keeps
     working throughout. Any failure is reported on stderr and swallowed —
     the nonce was already delivered, so a prune error must never fail the
-    send.
+    send. The outbox assumes a single writer per ``data_dir`` (one server
+    process): an interleaved append between the read and ``os.replace``
+    would be lost — acceptable here because the registry is per-process
+    anyway, and documented in ``docs/threat-model.md``.
     """
     target = sys.stderr if stderr is None else stderr
     tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
@@ -147,20 +150,25 @@ def _prune_outbox(path: Path, *, stderr: Any = None) -> None:
         )
         fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         dropped = 0
-        kept: list[str] = []
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            for line in handle:
+        kept: list[bytes] = []
+        # Binary read + per-line decode with replacement: a line carrying
+        # non-UTF-8 bytes (e.g. an operator editing the file in a non-UTF-8
+        # editor) must degrade to "kept unparseable", never abort the prune
+        # or propagate into send().
+        with os.fdopen(fd, "rb") as handle:
+            for raw in handle:
+                line = raw.decode("utf-8", errors="replace")
                 if _outbox_line_expired(line, cutoff):
                     dropped += 1
                 else:
-                    kept.append(line)
+                    kept.append(raw)
         if not dropped:
             return
         flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
         flags |= getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(str(tmp), flags, 0o600)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            with os.fdopen(fd, "wb") as handle:
                 handle.writelines(kept)
             _tighten_file_mode(tmp)
             os.replace(tmp, path)
@@ -171,7 +179,7 @@ def _prune_outbox(path: Path, *, stderr: Any = None) -> None:
             except OSError:
                 pass
             raise
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"[{SERVER_NAME}] outbox prune skipped: {exc}", file=target)
 
 

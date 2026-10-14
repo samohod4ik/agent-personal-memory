@@ -297,6 +297,22 @@ class OutboxSendTests(unittest.TestCase):
             mode = stat.S_IMODE(self.outbox.stat().st_mode)
             self.assertEqual(mode & 0o077, 0)
 
+    def test_append_survives_non_utf8_preexisting_line(self) -> None:
+        # An operator may edit the outbox in a non-UTF-8 editor; a line
+        # carrying raw non-UTF-8 bytes must be kept verbatim and must not
+        # abort the prune or propagate into send().
+        stale = datetime.now(timezone.utc) - timedelta(seconds=3600)
+        forged = json.dumps(
+            {"ts": stale.isoformat(timespec="seconds"), "body": "dead nonce"}
+        ).encode("utf-8")
+        self.outbox.write_bytes(forged + b"\ncp1251-op-note\xff\xfe\n")
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=io.StringIO())
+        self.assertTrue(send("live body"))
+        raw = self.outbox.read_bytes()
+        self.assertIn(b"cp1251-op-note\xff\xfe", raw)
+        self.assertIn(b"live body", raw)
+        self.assertNotIn(b"dead nonce", raw)
+
     def test_prune_failure_does_not_fail_send(self) -> None:
         # A prune error is logged to stderr and swallowed: the nonce was
         # already delivered, so the send itself still succeeds.
