@@ -475,6 +475,19 @@ no source-code port regressions found):
   (`ScannerPatternTests` pinning the allowlist anchoring and the new
   numeric-id pattern).
 
+Round-2 security re-review (`ONLY_MINOR`, three residual edges) resolved:
+
+- NF-1 (allowlist wildcard): the `PRODUCTION_MARKERS` entry is now anchored
+  to the exact bench fixture tuple literal in `bench/test_bench_runner.py`
+  — nothing else inside the parens is suppressed.
+- NF-2 (quoted keys): the numeric-id pattern accepts an optional
+  quote between the key name and the separator so JSON/dict-literal
+  assignments flag too.
+- NF-3 (outbox symlink): `_tighten_file_mode` refuses to follow symlinks
+  (`lstat` check) and the outbox `os.open` adds `O_NOFOLLOW` where the
+  platform provides it — a planted `confirmations.jsonl` symlink fails
+  the send closed instead of retargeting the nonce append.
+
 ### T2 notes
 
 - All crypto/erasure invariants are byte-faithful to `f0f6908`: AES-GCM-256,

@@ -81,7 +81,7 @@ SCAN_PATTERNS: tuple[str, ...] = (
     r"\btelegram:\d",
     # Numeric owner/chat identifiers under their canonical key names only,
     # so ``version=1``, ``port=8080``, ``max_limit=...`` stay unflagged.
-    r"\b(?:chat_id|user_id)\s*[:=]\s*[\"']?\d{6,}",
+    r"\b(?:chat_id|user_id)[\"']?\s*[:=]\s*[\"']?\d{6,}",
     # Secret-shaped assignments (PH1-F-02): ``name = "…"``, ``name: "…"``
     # (YAML/env style), ``name => "…"`` and bare ``NAME=value`` with a
     # digit-bearing value; the word boundary after the name keeps
