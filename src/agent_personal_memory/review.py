@@ -82,10 +82,10 @@ def confirm_candidate_memory(
     claim_id: object,
     *,
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
 ) -> dict[str, object]:
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     claim = _require_claim_id(claim_id)
     _require_candidate(actor, claim, store=memory)
     confirmation = _register_actor_source(
@@ -116,12 +116,12 @@ def reject_candidate_memory(
     *,
     confirm: object = False,
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
     session_binding: SessionBinding | None = None,
 ) -> dict[str, object]:
     reject_legacy_confirm(confirm)
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     claim = _require_claim_id(claim_id)
     _require_candidate(actor, claim, store=memory)
     return create_delete_preview(

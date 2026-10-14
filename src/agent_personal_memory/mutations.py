@@ -20,10 +20,6 @@ _DO_NOT_REMEMBER_MAX = 10
 _TEXT_MAX = 512
 
 
-def _memory(store: PersonalMemoryStore | None) -> PersonalMemoryStore:
-    return store if store is not None else PersonalMemoryStore()
-
-
 def _require_claim_id(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise ValidationError("claim_id: must be a non-empty string")
@@ -129,10 +125,10 @@ def correct_personal_memory(
     *,
     explanation: object = "",
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
 ) -> dict[str, object]:
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     claim = _require_claim_id(claim_id)
     payload = validate_claim_content(content if isinstance(content, (bytes, bytearray)) else str(content).encode("utf-8"))
     reason = validate_explanation(explanation)
@@ -170,12 +166,12 @@ def forget_personal_memory(
     *,
     confirm: object = False,
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
     session_binding: SessionBinding | None = None,
 ) -> dict[str, object]:
     reject_legacy_confirm(confirm)
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     claim = _require_claim_id(claim_id)
     get_authorized_claim(actor, claim, store=memory)
     return create_delete_preview(
@@ -202,12 +198,12 @@ def do_not_remember(
     text: object = None,
     confirm: object = False,
     language: object = "en",
-    store: PersonalMemoryStore | None = None,
+    store: PersonalMemoryStore,
     session_binding: SessionBinding | None = None,
 ) -> dict[str, object]:
     reject_legacy_confirm(confirm)
     lang = normalize_language(language)
-    memory = _memory(store)
+    memory = store
     target_id = None if claim_id in (None, "") else _require_claim_id(claim_id)
     phrase = _validate_optional_text(text)
     if target_id is None and phrase is None:

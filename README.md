@@ -132,7 +132,9 @@ with tempfile.TemporaryDirectory(prefix="pm-quickstart-") as data_dir:
 ## API map
 
 All names below are importable from `agent_personal_memory` (the canonical
-surface is `src/agent_personal_memory/__init__.py`).
+surface is `src/agent_personal_memory/__init__.py`). Mutating and
+confirm-gated flows take `store` as a required keyword argument; read
+helpers still default `store` to `None`.
 
 | Area | Name | What it does |
 | --- | --- | --- |
@@ -200,7 +202,9 @@ nonce-bearing preview text to the operator-only outbox
 result. The operator reads the outbox, finds `/memory_confirm <nonce>`
 inside `body`, and calls the `personal_memory_confirm` tool, whose only
 argument is `nonce`. Ignoring a preview is the cancel path — the nonce
-expires on its own (TTL 600 s).
+expires on its own (TTL 600 s). Lines whose nonce TTL has passed are
+pruned on the next append: the outbox is a transient delivery channel,
+not an audit log.
 
 Ported-text note: preview strings still mention `/memory_delete
 <request_id>` and `/memory_cancel <request_id>` — commands from the source
@@ -235,10 +239,14 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
   in use. `master.key` is a plaintext KEK file — whoever holds it plus the
   database can decrypt everything, so protect `<data_dir>` with OS
   permissions/full-disk encryption and never sync or commit it.
-- Public owner flows accept `store=None`, which opens — and creates if
-  missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
-  `~/.agent-personal-memory`). In embedded use always pass an explicit
-  `store=`: a forgotten argument silently reads/writes the host's default
+- Mutating owner flows (`remember_personal_insight`, `learn_from_turn`,
+  `correct_personal_memory`, `forget_personal_memory`, `do_not_remember`,
+  `confirm_candidate_memory`, `reject_candidate_memory`) take `store` as a
+  required keyword argument — a write can never hit an implicit default
+  store. Read helpers still accept `store=None`, which opens — and creates
+  if missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
+  `~/.agent-personal-memory`); in embedded use pass an explicit `store=`
+  everywhere so a forgotten argument cannot read the host's default
   location instead of the intended store.
 - Erasure is physical inside the live database but cannot reach backups,
   snapshots, or OS-level copies made before it (the `ErasureReceipt`

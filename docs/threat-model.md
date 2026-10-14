@@ -19,7 +19,7 @@ boundary) and [adr/0008-physical-erasure-and-tombstones.md](adr/0008-physical-er
 | Derived FTS index | `memory_claim_fts_index` table inside the DB | **Plaintext** claim text — opt-in, see below |
 | Source `external_ref` values | `memory_sources.keyed_lookup_hash` | HKDF-derived lookup key + HMAC; no plaintext refs |
 | Confirm-gate nonces | In-memory `DeleteRegistry` (TTL 600 s); under MCP also inside outbox `body` lines | One-time, bound to the exact `SessionBinding` |
-| Operator outbox | `<data_dir>/confirmations.jsonl` (MCP only) | OS file permissions; intended for the operator's eyes |
+| Operator outbox | `<data_dir>/confirmations.jsonl` (MCP only) | OS file permissions (0600); intended for the operator's eyes; TTL-expired lines are pruned on each append |
 
 ## Actors
 
@@ -129,8 +129,10 @@ Mechanism:
    exact preview, the operator confirms *this* deletion, not a paraphrase.
 3. `consume_confirm(nonce, binding)` requires the nonce plus a byte-identical
    `SessionBinding` (platform, user_id, session_key, session_id, chat_id,
-   thread_id, profile). Nonces are single-use and expire after 600 s. An
-   observer who merely sees a delivered preview in a shared channel cannot
+   thread_id, profile). Nonces are single-use and expire after 600 s. The
+   nonce check runs through `secrets.compare_digest` — belt-and-braces
+   constant-time comparison on top of an already hash-keyed dict lookup.
+   An observer who merely sees a delivered preview in a shared channel cannot
    consume another user's grant — the bindings differ.
 4. `consume_delete_request` re-checks every target (claim id, version,
    version id, content hash) inside one transaction; any drift denies the
@@ -173,10 +175,11 @@ secret file (0600-equivalent custody).
   outcome/reason — no content), lifecycle fields, timestamps, principal
   ids, and the deletion manifest are unencrypted. These leak existence and
   activity patterns, not contents.
-- **`confirmations.jsonl` (MCP) holds nonce-bearing text** until the
-  corresponding nonce's TTL expires; old lines are not garbage-collected.
-  They authorize nothing after expiry, but they do contain preview text of
-  what was about to be deleted.
+- **`confirmations.jsonl` (MCP) holds nonce-bearing text** — lines whose
+  nonce TTL has passed are pruned on the next append, so the file is a
+  transient delivery channel, not an audit log. Expired previews authorize
+  nothing, but a live line contains preview text of what is about to be
+  deleted.
 - **No multi-user UX or service hardening.** No authentication server, no
   rate limiting, no sandboxing — this is an embeddable library; the host
   provides the operating environment.

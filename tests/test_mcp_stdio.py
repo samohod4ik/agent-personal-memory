@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -264,6 +265,52 @@ class OutboxSendTests(unittest.TestCase):
         self.assertEqual(
             len(self.outbox.read_text(encoding="utf-8").splitlines()), 2
         )
+
+    def test_append_prunes_expired_lines_and_keeps_0600(self) -> None:
+        # The outbox is a transient delivery channel: lines whose nonce
+        # TTL horizon has passed are pruned on the next successful
+        # append; unparseable lines (not written by this transport) and
+        # fresh lines stay.
+        stale = datetime.now(timezone.utc) - timedelta(seconds=3600)
+        forged = json.dumps(
+            {
+                "ts": stale.isoformat(timespec="seconds"),
+                "request_id": "r-old",
+                "body": "dead nonce preview",
+            }
+        )
+        self.outbox.write_text(
+            forged + "\noperator-note\n", encoding="utf-8"
+        )
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=io.StringIO())
+        self.assertTrue(send("live preview body"))
+        lines = self.outbox.read_text(encoding="utf-8").splitlines()
+        self.assertIn("operator-note", lines)
+        bodies = [
+            json.loads(line)["body"]
+            for line in lines
+            if line.startswith("{")
+        ]
+        self.assertNotIn("dead nonce preview", bodies)
+        self.assertIn("live preview body", bodies)
+        if os.name == "posix":
+            mode = stat.S_IMODE(self.outbox.stat().st_mode)
+            self.assertEqual(mode & 0o077, 0)
+
+    def test_prune_failure_does_not_fail_send(self) -> None:
+        # A prune error is logged to stderr and swallowed: the nonce was
+        # already delivered, so the send itself still succeeds.
+        stale = datetime.now(timezone.utc) - timedelta(seconds=3600)
+        forged = json.dumps(
+            {"ts": stale.isoformat(timespec="seconds"), "body": "dead nonce"}
+        )
+        self.outbox.write_text(forged + "\n", encoding="utf-8")
+        blocker = self.data_dir / f"{apm_mcp.OUTBOX_NAME}.{os.getpid()}.tmp"
+        blocker.mkdir()  # occupies the prune temp path -> rewrite fails
+        err = io.StringIO()
+        send = apm_mcp.make_outbox_send(self.outbox, stderr=err)
+        self.assertTrue(send("live body"))
+        self.assertIn("prune", err.getvalue())
 
 
 class ErrorTextTests(unittest.TestCase):

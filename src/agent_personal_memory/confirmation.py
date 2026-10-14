@@ -253,14 +253,18 @@ class DeleteRegistry:
                 or (record is not None and not _bindings_equal(record.binding, binding))
             ):
                 raise TrustedDeleteDenied("confirmation is not available")
+            # The dict lookup is already hash-keyed; compare_digest is
+            # belt-and-braces so the token check does not short-circuit on
+            # prefix length for a same-length candidate.
             if (
                 token is None
+                or not secrets.compare_digest(token.nonce, nonce)
                 or record is None
                 or token.consumed
                 or record.consumed
                 or record.cancelled
                 or not record.preview_sent
-                or record.nonce != nonce
+                or not secrets.compare_digest(record.nonce or "", nonce)
                 or self.now() >= token.expires_mono
                 or self.now() >= record.expires_mono
                 or not _bindings_equal(token.binding, binding)
