@@ -22,7 +22,7 @@ carries the rationale.
 | `src/agent_personal_memory/ranking.py` | `plugins/personal_memory/ranking.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/score_locality.py` | `plugins/personal_memory/score_locality.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/confirmation.py` | `plugins/personal_memory/trusted_delete.py` | `f0f6908` | adapted | cuts: (1) all host session resolution removed — `session_binding_from_env`/`session_binding_from_event`/`_lookup_session_id`/`_session_id_from_entry`/`_normalize_platform`/`_normalize_profile`/`_platform_name` plus `_NON_MESSAGING_SURFACES`/`_TELEGRAM_PLATFORMS` — caller passes `SessionBinding` explicitly; (2) host transport removed — `pre_gateway_dispatch`, `_handle_inbound_*`, `_is_trusted_inbound_event`, `_raw_message`/`_raw_author_is_bot`/`_is_forwarded`/`_FORWARD_ATTRS`, `_deliver_text`/`_try_deliver`/`_send_metadata`/`_send_succeeded`/`_finish_delivery`, `_event_command`/`_event_args`, `handle_memory_*_command`/`_COMMAND_REFUSAL`, `_generic_deny_text`/`_cancel_text`, `asyncio`/`inspect`-async delivery — stays in Hermes (replaced by injected `send(text) -> bool` per `open_preview` call, registered via `mark_preview_sent` only on truthy return; a coroutine return is denied as an unverifiable send); (3) default-store removal — `create_delete_preview`/`consume_delete_request` require an explicit `store` argument, no `PersonalMemoryStore()` fallback; (4) `session_binding_from_env` env fallback removed from `create_delete_preview` (explicit param only, `None` keeps the non-authorizing branch); (5) locale helpers vendored verbatim pending the owner-flow port (`SUPPORTED_LANGUAGES`, `_STATE_LABELS`, `_KIND_LABELS`, `_MUTATION_CONFIRM`, `normalize_language`/`format_claim_summary`/`format_mutation_confirmation` as `_normalize_language`/`_format_claim_summary`/`_format_mutation_confirmation`); (6) `_session_required_text` reworded platform-neutrally ("authenticated messaging session" / "подтверждённой сессии"); (7) unused module logger dropped. Kept verbatim: `SessionBinding` (8 fields), `BoundTarget`, `DeleteRequest`, `ConfirmNonce`, `DeleteRegistry` (TTL 600s, `max_items` 64, single-use consume, observer/cross-binding denial, `_expire_locked`/`_request_usable_locked`), `create_request`/`prepare_preview`/`mark_preview_sent`/`consume_confirm`/`cancel`/`peek`/`reset`, `REGISTRY`/`reset_registry`, `reject_legacy_confirm`, `bind_targets`, `_binding_complete`/`_bindings_equal`, `_new_token`, `_canonical_preview_text`/`_preview_heading`/`_open_preview_text` (EN+RU strings byte-identical), command-name constants |
-| `docs/adr/0008-physical-erasure-and-tombstones.md` | `docs/adr/0008-physical-erasure-and-tombstones.md` | `f0f6908` | ported | none — verbatim; referenced by the ported erasure test |
+| `docs/adr/0008-physical-erasure-and-tombstones.md` | `docs/adr/0008-physical-erasure-and-tombstones.md` | `f0f6908` | adapted | verbatim content plus a one-line provenance banner noting historical task/ADR references; referenced by the ported erasure test |
 | `tests/test_store.py` | `plugins/personal_memory/tests/test_store.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; source-file reads go through `store_module.__file__` instead of a plugins-root path |
 | `tests/test_crypto.py` | `plugins/personal_memory/tests/test_crypto.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*` |
 | `tests/test_erasure.py` | `plugins/personal_memory/tests/test_erasure.py` | `f0f6908` | ported | sys.path shim removed; imports rewritten to `agent_personal_memory.*`; ADR-0008 path resolved against this repo's `docs/adr/`; `patch` target renamed to `agent_personal_memory.store` |
@@ -48,7 +48,7 @@ carries the rationale.
 | `src/agent_personal_memory/engines/types.py` | `plugins/personal_memory/engines/types.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/engines/native.py` | `plugins/personal_memory/engines/native.py` | `f0f6908` | ported | none — verbatim |
 | `src/agent_personal_memory/engines/mem0_shadow.py` | `plugins/personal_memory/engines/mem0_shadow.py` | `f0f6908` | ported | none — verbatim; protocol-only shadow layer (`Mem0ShadowClient` Protocol, injected client), no mem0 network/cloud calls anywhere |
-| `src/agent_personal_memory/confirmation.py` | `plugins/personal_memory/trusted_delete.py` | `f0f6908` | adapted | T5 update: vendored locale copies (`SUPPORTED_LANGUAGES`, `_STATE_LABELS`, `_KIND_LABELS`, `_MUTATION_CONFIRM`, `_normalize_language`, `_format_claim_summary`, `_format_mutation_confirmation`, `_fail_language`, `_label`) deleted; module now imports `normalize_language`/`format_claim_summary`/`format_mutation_confirmation` from `.locale` — no behaviour change |
+| `src/agent_personal_memory/confirmation.py` | `plugins/personal_memory/trusted_delete.py` | `f0f6908` | adapted | T5 update: vendored locale copies (`SUPPORTED_LANGUAGES`, `_STATE_LABELS`, `_KIND_LABELS`, `_MUTATION_CONFIRM`, `_normalize_language`, `_format_claim_summary`, `_format_mutation_confirmation`, `_fail_language`, `_label`) deleted; module now imports `normalize_language`/`format_claim_summary`/`format_mutation_confirmation` from `.locale` — no behavior change |
 | `src/agent_personal_memory/__init__.py` | `plugins/personal_memory/__init__.py` | `f0f6908` | adapted | rewritten for the standalone surface: exports `PersonalMemoryStore`, `Actor`, read-layer and owner-flow functions, confirm-gate names, engine types and the schema constants/`TOOL_SCHEMAS`; drops `_TOOLS`/`register`/`load_tests`/`inspect_config_rollout`, `handle_*` wrappers, the inject-hook names and the yaml-parsing helpers (host coupling); adds `CONFIRM_REGISTRY` (module REGISTRY alias for `open_preview`/`consume_confirm` access) and `create_candidate` (unbound `PersonalMemoryStore.create_candidate` re-export); keeps `__version__` |
 | `tests/test_mutations.py` | `plugins/personal_memory/tests/test_mutations.py` | `f0f6908` | adapted | sys.path shim + env juggling removed; imports rewritten to `agent_personal_memory.*` (schema constants from `.schemas`); dropped `test_register_exposes_mutation_tools`, `test_handle_do_not_remember_omitted_language_is_preview`, `test_tool_handlers_use_session_actor` (register()/tools handlers + session-env coupling stay in Hermes), `test_production_config_enables_personal_memory_toolset` (production config); `_session_env`/`_CaptureCtx` helpers removed with them |
 | `tests/test_review.py` | `plugins/personal_memory/tests/test_review.py` | `f0f6908` | adapted | same adaptation; dropped `test_register_exposes_candidate_review_tools`, `test_tool_handlers_use_session_actor`, `test_production_config_enables_personal_memory_toolset` |
@@ -212,7 +212,7 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
 - Registry/record internals (`DeleteRegistry`, `DeleteRequest`,
   `ConfirmNonce`, `BoundTarget`, `SessionBinding` 8-field shape,
   `_binding_complete`, `_bindings_equal`, TTL/eviction/consume logic) are
-  line-for-line ports; the only behavioural additions are the
+  line-for-line ports; the only behavioral additions are the
   coroutine-return denial in `open_preview` (an `async def` transport
   cannot confirm synchronous delivery — same fail-closed outcome as the
   source's failed-send tests) and the required explicit `store` on
@@ -257,7 +257,7 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   later turns." — the task boundary requires zero host-hook terminology in
   new modules; the RU sibling string already used the neutral wording.
 - `confirmation.py` no longer carries vendored locale copies; it imports
-  the three helpers from `.locale`. No behaviour change — the vendored
+  the three helpers from `.locale`. No behavior change — the vendored
   code was a verbatim copy of the same source tables.
 - `mem0_shadow.py` stays a pure protocol/shadow layer: `Mem0ShadowClient`
   is a `Protocol` satisfied by host-injected clients; the module performs
@@ -320,7 +320,7 @@ rationale is in [adr/0002-core-boundary.md](adr/0002-core-boundary.md).
   remember→list→forget→outbox→confirm erasure, wrong-nonce and
   binding-mismatch denials (mismatched consume does not burn the nonce),
   extra/identity-field rejection, unknown/missing-arg/non-dict rejection,
-  failed-send fail-closed behaviour, and `python -m` startup refusal.
+  failed-send fail-closed behavior, and `python -m` startup refusal.
 
 ### PH-3 review r1 fix notes
 

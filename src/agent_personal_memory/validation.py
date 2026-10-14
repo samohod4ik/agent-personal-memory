@@ -170,7 +170,7 @@ def validate_memory_mode(value: object) -> str:
 
 
 def confirmation_source_is_reliable(source_kind: str, memory_mode: str) -> bool:
-    """ADR 0007 reliable kinds, plus auto_insight_turn only in auto_insight mode."""
+    """Closed-vocabulary reliable source kinds, plus auto_insight_turn only in auto_insight mode."""
     if source_kind in RELIABLE_SOURCE_KINDS:
         return True
     return (
