@@ -179,7 +179,9 @@ secret file (0600-equivalent custody).
   nonce TTL has passed are pruned on the next append, so the file is a
   transient delivery channel, not an audit log. Expired previews authorize
   nothing, but a live line contains preview text of what is about to be
-  deleted.
+  deleted. The outbox assumes a single writer per `data_dir` (one server
+  process); a concurrent append could be lost during a prune rewrite —
+  sharing one `data_dir` across live server processes is unsupported.
 - **No multi-user UX or service hardening.** No authentication server, no
   rate limiting, no sandboxing — this is an embeddable library; the host
   provides the operating environment.
