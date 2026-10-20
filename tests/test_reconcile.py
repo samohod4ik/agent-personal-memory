@@ -329,6 +329,30 @@ class SlotRuleJudgeTests(unittest.TestCase):
             Relation.UNRELATED,
         )
 
+    def test_stop_words_do_not_fill_slot_value(self) -> None:
+        self.assertEqual(
+            self.judge.judge(
+                "я переехал в Пермь на юг", "я живу в Казани на севере"
+            ),
+            Relation.CONTRADICTS,
+        )
+        self.assertEqual(
+            self.judge.judge(
+                "I moved to Perm on Monday", "I live in Kazan on the hill"
+            ),
+            Relation.CONTRADICTS,
+        )
+        self.assertEqual(
+            self.judge.judge("я живу в Казани, в центре", KAZAN),
+            Relation.REFINES,
+        )
+
+    def test_stop_word_only_value_yields_no_slot(self) -> None:
+        self.assertIsNone(self.judge.slot_of("я живу в на"))
+        self.assertEqual(
+            self.judge.judge("я живу в на", KAZAN), Relation.UNRELATED
+        )
+
     def test_negation_does_not_set_slot_value(self) -> None:
         self.assertIsNone(self.judge.slot_of("больше не живу в Казани"))
         self.assertIsNone(self.judge.slot_of("I no longer live in Kazan"))
@@ -568,6 +592,96 @@ class StoreLinkTests(unittest.TestCase):
         self.assertEqual(audit["outcome"], "rejected")
         self.assertEqual(audit["policy_reason"], "invalid_transition")
         self.assertEqual(self.store.list_claim_links(TENANT_A, status=None), [])
+
+    def _expire_newest_version(self, claim_id: str) -> None:
+        conn = self.store._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_claim_versions "
+                "SET expires_at = '2000-01-01T00:00:00Z' "
+                "WHERE claim_id = ? AND version = ("
+                "SELECT MAX(version) FROM memory_claim_versions "
+                "WHERE claim_id = ?)",
+                (claim_id, claim_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_link_from_superseded_claim_rejected(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        link = self.store.create_claim_link(
+            TENANT_A,
+            from_claim_id=str(new["claim_id"]),
+            to_claim_id=str(old["claim_id"]),
+            origin="manual",
+        )
+        accept_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+        third = _confirmed(self.store, TENANT_A, "я живу в Уфе", "a-ufa")
+        with self.assertRaises(ValidationError) as ctx:
+            self.store.create_claim_link(
+                TENANT_A,
+                from_claim_id=str(old["claim_id"]),
+                to_claim_id=str(third["claim_id"]),
+                origin="manual",
+            )
+        self.assertEqual(
+            str(ctx.exception), "claim link: source claim must be active"
+        )
+        conn = self.store._connect()
+        try:
+            audit = conn.execute(
+                "SELECT outcome, policy_reason FROM memory_audit "
+                "WHERE action = 'claim.link_propose' AND outcome = 'rejected'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(audit)
+        self.assertEqual(audit["policy_reason"], "invalid_transition")
+        self.assertEqual(
+            self.store.list_claim_links(
+                TENANT_A, status=None, claim_id=str(third["claim_id"])
+            ),
+            [],
+        )
+
+    def test_link_with_expired_claim_is_not_found(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        expired = _confirmed(self.store, TENANT_A, "я живу в Уфе", "a-ufa")
+        self._expire_newest_version(str(expired["claim_id"]))
+        messages: list[str] = []
+        for from_id, to_id in (
+            (str(new["claim_id"]), str(expired["claim_id"])),
+            (str(expired["claim_id"]), str(old["claim_id"])),
+            (str(new["claim_id"]), str(uuid.uuid4())),
+        ):
+            with self.assertRaises(NotFoundError) as ctx:
+                self.store.create_claim_link(
+                    TENANT_A,
+                    from_claim_id=from_id,
+                    to_claim_id=to_id,
+                    origin="x",
+                )
+            messages.append(str(ctx.exception))
+        self.assertEqual(messages, ["Claim not found"] * 3)
+        conn = self.store._connect()
+        try:
+            audits = list(
+                conn.execute(
+                    "SELECT outcome, policy_reason FROM memory_audit "
+                    "WHERE action = 'claim.link_propose'"
+                )
+            )
+        finally:
+            conn.close()
+        self.assertEqual(
+            [(row["outcome"], row["policy_reason"]) for row in audits],
+            [("denied", "not_found")] * 3,
+        )
 
     def test_repeat_returns_existing_link_after_target_superseded(self) -> None:
         old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")

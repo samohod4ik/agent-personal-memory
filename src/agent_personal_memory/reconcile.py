@@ -80,9 +80,12 @@ def slot_of(text: str) -> tuple[str, frozenset[str]] | None:
         for slot, pattern in _SLOT_PATTERNS:
             match = pattern.search(clause)
             if match is not None:
-                value = frozenset(
-                    token.stem for token in tokenize(match.group(1))[:3]
-                )
+                stems = [
+                    token.stem
+                    for token in tokenize(match.group(1))
+                    if not token.stop
+                ]
+                value = frozenset(stems[:3])
                 if value:
                     return (slot, value)
     return None

@@ -1935,11 +1935,20 @@ class PersonalMemoryStore:
                     if to_row is not None and to_row["deleted_at"] is None
                     else None
                 )
+                now = utcnow_iso()
                 if (
                     from_newest is None
                     or to_newest is None
                     or str(from_newest["sensitivity"]) == "restricted"
                     or str(to_newest["sensitivity"]) == "restricted"
+                    or (
+                        from_newest["expires_at"] is not None
+                        and str(from_newest["expires_at"]) <= now
+                    )
+                    or (
+                        to_newest["expires_at"] is not None
+                        and str(to_newest["expires_at"]) <= now
+                    )
                 ):
                     self._append_audit(
                         conn,
@@ -1958,7 +1967,23 @@ class PersonalMemoryStore:
                 )
                 if existing is not None:
                     return self._link_result(existing)
-                if str(to_newest["state"]) != MemoryState.CONFIRMED:
+                if str(from_newest["state"]) not in {
+                    state.value for state in ACTIVE_READ_STATES
+                }:
+                    self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=tenant_id,
+                        action="claim.link_propose",
+                        target_kind="claim_link",
+                        target_id="",
+                        outcome="rejected",
+                        policy_reason="invalid_transition",
+                    )
+                    pending_error = ValidationError(
+                        "claim link: source claim must be active"
+                    )
+                elif str(to_newest["state"]) != MemoryState.CONFIRMED:
                     self._append_audit(
                         conn,
                         tenant_id=tenant_id,
