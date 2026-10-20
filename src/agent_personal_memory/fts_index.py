@@ -204,6 +204,7 @@ def rank_claims_fts(
             item,
             query_tokens=query_tokens,
             entities=entities,
+            query_text=query,
         )
         if rank_score <= 0.0:
             continue
