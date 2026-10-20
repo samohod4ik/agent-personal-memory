@@ -65,15 +65,16 @@ facts:
 
 A new memory that contradicts a confirmed one is **not** auto-resolved:
 `remember_personal_insight` results and the persisted items of
-`learn_from_turn` carry a `reconciliations` list of pending
-`supersedes` links (new → old)
-proposed by a deterministic judge. The new memory stays a `candidate`
-and the old one stays `confirmed` until the **owner** decides.
+`learn_from_turn` carry a `reconciliations` list of pending `supersedes`
+links (new → old) proposed by a deterministic judge. The new memory
+stays a `candidate` and the old one stays `confirmed` until the
+**owner** decides.
 
 When a remember/learn result has a non-empty `reconciliations` list:
 
 1. Tell the owner what the proposal is — `list_memory_reconciliations`
-   returns the pending links with the new and old texts.
+   returns the pending links under a localized `heading` with the new
+   and old texts.
 2. Ask whether the new fact should replace the old one, then call
    `accept_memory_reconciliation` (promotes the new memory, supersedes
    the old) or `reject_memory_reconciliation` (dismisses the link; both
@@ -300,7 +301,7 @@ never carry identity fields — extra keys are rejected.
 | `explain_why_remembered` / `explain_claim` | Provenance and lifecycle explanations (EN/RU) |
 | `correct_personal_memory` | Replace claim content with a new version |
 | `export_owner_data` / `export_personal_memory` | Full owner export (JSON bytes / localized) |
-| `list_memory_reconciliations` | List pending (or accepted/rejected) replacement links with old/new texts |
+| `list_memory_reconciliations` | List pending (or accepted/rejected) replacement links under a localized `heading` with old/new texts |
 | `accept_memory_reconciliation` / `reject_memory_reconciliation` | Owner resolution of a pending `supersedes` link |
 | `personal_memory_history` | Chronological version+link history for one claim (`claim_id` or `query`) |
 | `retract_personal_memory` | Retire a claim (terminal `retracted` state; content stays encrypted until forget) |

@@ -7,7 +7,7 @@
 
 ## Context
 
-In 0.1.x a memory was a write-once chain of versions on a single claim:
+In 0.1.x a memory was an append-only version chain on a single claim:
 `correct_personal_memory` superseded the previous version of the *same*
 claim, and `forget_personal_memory` erased the record through the
 confirm-gate. Two gaps remained:
@@ -58,8 +58,8 @@ verdict creates a pending link.
 
 The shipped default is `SlotRuleJudge` (`judge_id` `slot_rule.v1`), a
 deterministic rule judge: it recognizes a small closed set of personal
-slots (`home`, `name`, `name_style`; RU and EN phrasings), compares the
-first three non-stop stems of each slot value, ignores negated clauses,
+slots (`home`, `name`, `name_style`; RU and EN phrasings), compares up
+to three non-stop stems of each slot value, ignores negated clauses,
 and maps temporary markers ("this week", "сегодня", ...) to
 `temporary`, which never supersedes. It deliberately prefers false
 negatives: contradictions its rules do not model are reported

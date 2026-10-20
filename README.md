@@ -31,15 +31,15 @@ server, no network call, and no telemetry.
 - **Physical erasure.** Confirmed deletion destroys the wrapped DEKs and
   encrypted blobs, drops support edges and FTS rows, compacts the database,
   and leaves only an anonymized tombstone receipt.
-- **Deterministic recall.** SQLite FTS5 (tenant scope inside the `MATCH`
+- **Deterministic recall.** SQLite FTS5 (tenant scope inside the FTS
   query) plus stem-aware RU/EN lexical/entity/recency ranking and
   tenant-local BM25 — no embeddings, no LLM in the loop.
 - **Owner-resolved conflicts.** When a new memory contradicts a confirmed
   one, a deterministic judge proposes a `supersedes` link instead of
   silently overwriting; only the owner's accept promotes the new memory
-  and supersedes the old. Full per-version history (`change_reason`,
-  accepted links both directions) and a `retracted` state for
-  facts that stopped being true but should stay on record.
+  and supersedes the old. Full per-version history (`reason`, accepted
+  links both directions) and a `retracted` state for facts that stopped
+  being true but should stay on record.
 - **Explainability and export.** `explain_claim` / `explain_why_remembered`
   report provenance, lifecycle state, and supporting sources;
   `export_owner_data` produces a full owner export. Owner-facing text is
@@ -152,12 +152,12 @@ normalized the same way — casefold, `ё`→`е`, Snowball stemming for
 Russian and English (via the mandatory `snowballstemmer` dependency) —
 so «какая видеокарта у меня» also finds a fact stored as «видеокартой».
 A token matches when it appears as a substring (the 0.1.x behaviour)
-**or** its stem equals a stored stem, so every previous hit still
-matches; stop-word-only false positives are gone, while a query made
-entirely of stop words keeps the old behaviour. Identifiers are never
-stemmed: tokens with digits, mixed Cyrillic/Latin tokens, UUIDs, dates,
-and originally-uppercase tokens of ≤6 characters — "RTX 3060" still
-matches exactly.
+**or** its stem equals a stored stem, so previous hits on content
+words still match; stop-word-only false positives are gone, while a
+query made entirely of stop words keeps the old behaviour. Identifiers
+are never stemmed: tokens with digits, mixed Cyrillic/Latin tokens,
+UUIDs, dates, and originally-uppercase tokens of ≤6 characters —
+"RTX 3060" still matches exactly.
 
 Known limits: different Snowball roots are not unified («созваниваться»
 does not match «созвоны» — pinned by an expected-failure test), and the
@@ -174,9 +174,9 @@ until `build_claim_fts_index` rebuilds it per tenant.
 
 When a new memory contradicts a confirmed one, the library does not pick
 a winner — the owner does. `remember_personal_insight` results and the
-persisted items of `learn_from_turn` carry `reconciliations`: pending `supersedes`
-links (new → old) proposed by a `ConflictJudge` against up to five
-confirmed memories of the same owner. The default `SlotRuleJudge`
+persisted items of `learn_from_turn` carry `reconciliations`: pending
+`supersedes` links (new → old) proposed by a `ConflictJudge` against up
+to five confirmed memories of the same owner. The default `SlotRuleJudge`
 (`slot_rule.v1`) is deterministic and conservative — it compares a few
 personal slots (home, name, name-style; RU and EN) and prefers false
 negatives; a host can inject any judge (e.g. an LLM) via `judge=`. A
@@ -248,8 +248,8 @@ with tempfile.TemporaryDirectory(prefix="pm-reconcile-") as data_dir:
 
 `personal_memory_history` (by `claim_id` or `query`) walks a memory's
 version chain and every accepted replacement around it — chronological
-entries with state, `change_reason` (`created` / `promoted` / `changed`
-/ `retracted`), timestamps, and content for the owner. The promotion
+entries with state, `reason` (`created` / `promoted` / `changed` /
+`retracted`), timestamps, and content for the owner. The promotion
 step folds into the creation entry by default (`collapse_promoted`);
 `current_claim_id` points at the newest memory in the chain. Versions
 written by 0.1.x databases get a reason inferred from the audit log
@@ -278,7 +278,7 @@ helpers still default `store` to `None`.
 | Review | `list_candidate_memories` | List drafts awaiting owner review |
 | | `confirm_candidate_memory` | Promote a candidate to `confirmed` via a user-confirmation source |
 | | `reject_candidate_memory` | Preview candidate erasure (confirm-gated) |
-| Reconciliation | `list_memory_reconciliations` | List replacement links (default `pending`) with owner-visible old/new texts |
+| Reconciliation | `list_memory_reconciliations` | List replacement links (default `pending`) under a localized `heading` with owner-visible old/new texts |
 | | `accept_memory_reconciliation` | Owner-accept a pending `supersedes` link: promotes the new memory, supersedes the old (stale-checked) |
 | | `reject_memory_reconciliation` | Mark a pending link rejected; both memories stay unchanged |
 | | `propose_reconciliation` / `propose_reconciliations` | Manual link proposal / judge-driven pass; `ConflictJudge`, `SlotRuleJudge`, `Relation` form the judge seam (`judge=` kwarg) |
@@ -384,8 +384,9 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
   store. The reconciliation/history helpers
   (`list_memory_reconciliations`, `accept_memory_reconciliation`,
   `reject_memory_reconciliation`, `personal_memory_history`,
-  `retract_personal_memory`) require `store=` the same way. Read helpers still accept `store=None`, which opens — and creates
-  if missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
+  `retract_personal_memory`) require `store=` the same way. Read helpers
+  still accept `store=None`, which opens — and creates if missing — the
+  default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
   `~/.agent-personal-memory`); in embedded use pass an explicit `store=`
   everywhere so a forgotten argument cannot read the host's default
   location instead of the intended store.

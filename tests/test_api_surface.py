@@ -61,6 +61,16 @@ class ApiSurfaceTests(unittest.TestCase):
                 self.assertTrue(hasattr(apm, name))
                 self.assertIsNotNone(getattr(apm, name))
 
+    def test_every_schema_constant_is_exported(self) -> None:
+        schema_names = [
+            name for name in dir(schemas) if name.endswith("_SCHEMA")
+        ]
+        self.assertTrue(schema_names)
+        for name in schema_names:
+            with self.subTest(name=name):
+                self.assertIn(name, apm.__all__)
+                self.assertIsNotNone(getattr(apm, name, None))
+
     def test_personal_memory_confirm_schema_takes_only_nonce(self) -> None:
         self.assertIn("personal_memory_confirm", schemas.TOOL_SCHEMAS)
         schema = schemas.TOOL_SCHEMAS["personal_memory_confirm"]

@@ -1210,6 +1210,17 @@ class ReconResolveTests(unittest.TestCase):
         self.assertIsInstance(item["old_content"], str)
         self.assertEqual(item["new_content"], PERM_NEG)
         self.assertEqual(item["old_content"], KAZAN)
+        self.assertEqual(listing["language"], "en")
+        self.assertEqual(
+            listing["heading"], "Proposed memory replacements:"
+        )
+        ru_listing = list_memory_reconciliations(
+            TENANT_A, language="ru", store=self.store
+        )
+        self.assertEqual(ru_listing["language"], "ru")
+        self.assertEqual(
+            ru_listing["heading"], "Предложенные замены фактов:"
+        )
         empty = list_memory_reconciliations(
             TENANT_A, status="accepted", store=self.store
         )
@@ -1219,6 +1230,32 @@ class ReconResolveTests(unittest.TestCase):
             list_memory_reconciliations(
                 TENANT_A, status="bogus", store=self.store
             )
+
+    def test_list_memory_reconciliations_marks_binary_content(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        source = _source(self.store, TENANT_A, "a-binary")
+        new = self.store.create_candidate(
+            TENANT_A,
+            claim_kind="confirmed_fact",
+            content=b"\xff\xfe\x01binary",
+            confidence=0.9,
+            explanation="seed",
+            sensitivity="normal",
+            source_ids=[str(source["source_id"])],
+            expires_at="2099-01-01T00:00:00Z",
+        )
+        link = propose_reconciliation(
+            TENANT_A,
+            str(new["claim_id"]),
+            str(old["claim_id"]),
+            store=self.store,
+        )
+        listing = list_memory_reconciliations(TENANT_A, store=self.store)
+        self.assertEqual(listing["count"], 1)
+        item = listing["items"][0]
+        self.assertEqual(item["link_id"], link["link_id"])
+        self.assertEqual(item["new_content"], "<binary>")
+        self.assertEqual(item["old_content"], KAZAN)
 
     def test_erase_old_claim_removes_link(self) -> None:
         k1, k2, link = self._linked_pair()

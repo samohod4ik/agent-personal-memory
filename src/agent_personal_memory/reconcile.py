@@ -15,7 +15,11 @@ from enum import Enum
 from typing import Protocol
 
 from .lifecycle import MemoryState
-from .locale import format_mutation_confirmation, normalize_language
+from .locale import (
+    format_mutation_confirmation,
+    format_reconciliation_list_heading,
+    normalize_language,
+)
 from .mutations import _register_actor_source
 from .query import get_authorized_claim, query_claims
 from .store import NotFoundError, PersonalMemoryStore
@@ -303,7 +307,13 @@ def _visible_content(
         )
     except NotFoundError:
         return None
-    return _as_text(row.get("content"))
+    content = row.get("content")
+    if isinstance(content, (bytes, bytearray)):
+        try:
+            return bytes(content).decode("utf-8")
+        except UnicodeDecodeError:
+            return "<binary>"
+    return _as_text(content)
 
 
 def list_memory_reconciliations(
@@ -314,10 +324,12 @@ def list_memory_reconciliations(
     store: PersonalMemoryStore,
 ) -> dict[str, object]:
     """List reconciliation links with owner-readable claim contents as
-    text (invalid utf-8 decodes to ""); invisible
+    text (invalid utf-8 reports ``"<binary>"``, the same marker as
+    ``locale.format_claim_summary``); invisible
     (restricted/expired/deleted) claims report content None. ``status``
     is validated by ``store.list_claim_links`` (pending/accepted/
-    rejected or None for all)."""
+    rejected or None for all). The result carries a localized
+    ``heading`` like the other owner-facing lists."""
     lang = normalize_language(language)
     links = store.list_claim_links(actor, status=status)
     items: list[dict[str, object]] = []
@@ -332,4 +344,9 @@ def list_memory_reconciliations(
             actor, link["to_claim_id"], store=store
         )
         items.append(item)
-    return {"language": lang, "count": len(items), "items": items}
+    return {
+        "language": lang,
+        "heading": format_reconciliation_list_heading(lang),
+        "count": len(items),
+        "items": items,
+    }

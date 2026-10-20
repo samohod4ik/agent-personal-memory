@@ -293,12 +293,15 @@ LIST_MEMORY_RECONCILIATIONS_SCHEMA = {
             "status": {
                 "type": "string",
                 "enum": ["pending", "accepted", "rejected"],
-                "description": "Replacement status to list. Default pending.",
+                "description": (
+                    "Replacement status to list. Omit for pending; "
+                    "null lists every status."
+                ),
             },
             "language": {
                 "type": "string",
                 "enum": ["en", "ru"],
-                "description": "Response language",
+                "description": "Language of the heading",
             },
         },
         "required": [],

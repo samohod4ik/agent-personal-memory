@@ -65,6 +65,11 @@ _CANDIDATE_LIST_INTRO = {
     "ru": "Кандидаты в память, ожидающие вашего решения.",
 }
 
+_RECONCILIATION_LIST_HEADING = {
+    "en": "Proposed memory replacements:",
+    "ru": "Предложенные замены фактов:",
+}
+
 _EXPORT_HEADING = {
     "en": "Personal memory export for the current session owner.",
     "ru": "Экспорт личной памяти текущего пользователя сессии.",
@@ -201,6 +206,10 @@ def format_list_heading(language: str) -> str:
 
 def format_candidate_list_heading(language: str) -> str:
     return _CANDIDATE_LIST_INTRO[normalize_language(language)]
+
+
+def format_reconciliation_list_heading(language: str) -> str:
+    return _RECONCILIATION_LIST_HEADING[normalize_language(language)]
 
 
 def format_export_heading(language: str) -> str:
