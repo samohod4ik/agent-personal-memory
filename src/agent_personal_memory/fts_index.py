@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import re
-
 from .query import get_authorized_claim, query_claims
 from .ranking import extract_entities, rank_claims, score_claim_row, tokenize_query
 from .store import NotFoundError, PersonalMemoryStore
+from .text_norm import NORMALIZER_VERSION, query_terms, stem_text
 from .types import Actor
 from .validation import validate_list_limit, validate_rank_query_text
 
 _FTS_TABLE = "memory_claim_fts_index"
-_FTS_MATCH_SAFE = re.compile(r"[^\w\u0400-\u04FF]+", re.UNICODE)
+_FTS_META_TABLE = "memory_fts_meta"
 
 
 def _memory(store: PersonalMemoryStore | None) -> PersonalMemoryStore:
@@ -29,12 +28,33 @@ def _decode_text(value: object) -> str:
     return ""
 
 
-def _fts_table_exists(conn) -> bool:
+def _table_exists(conn, name: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (_FTS_TABLE,),
+        (name,),
     ).fetchone()
     return row is not None
+
+
+def _fts_table_exists(conn) -> bool:
+    return _table_exists(conn, _FTS_TABLE)
+
+
+def _fts_v2_ready(conn) -> bool:
+    if not _fts_table_exists(conn):
+        return False
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({_FTS_TABLE})")
+    }
+    if "body_stem" not in columns:
+        return False
+    if not _table_exists(conn, _FTS_META_TABLE):
+        return False
+    row = conn.execute(
+        f"SELECT normalizer_version FROM {_FTS_META_TABLE} WHERE id = 1"
+    ).fetchone()
+    return row is not None and int(row[0]) == NORMALIZER_VERSION
 
 
 def delete_claim_fts_rows(
@@ -52,31 +72,66 @@ def delete_claim_fts_rows(
     )
 
 
-def _ensure_fts_table(conn) -> None:
+def _create_fts_v2(conn) -> None:
     conn.execute(
         f"""
-        CREATE VIRTUAL TABLE IF NOT EXISTS {_FTS_TABLE} USING fts5(
+        CREATE VIRTUAL TABLE {_FTS_TABLE} USING fts5(
             claim_id UNINDEXED,
             tenant_id UNINDEXED,
             body,
+            body_stem,
             tokenize='unicode61 remove_diacritics 0'
         )
         """
     )
+    conn.execute(
+        f"""
+        CREATE TABLE {_FTS_META_TABLE}(
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            normalizer_version INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        f"INSERT INTO {_FTS_META_TABLE}(id, normalizer_version) VALUES (1, ?)",
+        (NORMALIZER_VERSION,),
+    )
 
 
-def _fts_query_terms(query: str) -> str:
-    tokens = tokenize_query(query)
-    if not tokens:
-        raise ValueError("empty query")
-    escaped = []
-    for token in tokens:
-        cleaned = _FTS_MATCH_SAFE.sub("", token)
-        if cleaned:
-            escaped.append(f'"{cleaned}"')
-    if not escaped:
-        raise ValueError("empty query")
-    return " AND ".join(escaped)
+def sync_claim_fts(
+    conn,
+    *,
+    tenant_id: str,
+    claim_id: str,
+    text: str | None,
+) -> None:
+    """Keep one claim's derived FTS row in step with its newest write."""
+    if not _fts_v2_ready(conn):
+        return
+    conn.execute(
+        f"DELETE FROM {_FTS_TABLE} WHERE tenant_id = ? AND claim_id = ?",
+        (tenant_id, claim_id),
+    )
+    if text is None:
+        return
+    conn.execute(
+        f"INSERT INTO {_FTS_TABLE}(claim_id, tenant_id, body, body_stem) "
+        "VALUES (?, ?, ?, ?)",
+        (claim_id, tenant_id, text, stem_text(text)),
+    )
+
+
+def _fts_quote(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def _fts_match_expr(query: str) -> str | None:
+    terms = query_terms(query)
+    if not terms:
+        return None
+    stems = " AND ".join(f"body_stem:{_fts_quote(term.stem)}" for term in terms)
+    raws = " AND ".join(f"body:{_fts_quote(term.raw)}" for term in terms)
+    return f"({stems}) OR ({raws})"
 
 
 def build_claim_fts_index(
@@ -94,7 +149,11 @@ def build_claim_fts_index(
     indexed = 0
     with memory._tx() as conn:
         tenant_id = memory._ensure_principal_on(conn, actor)
-        _ensure_fts_table(conn)
+        if _fts_table_exists(conn) and not _fts_v2_ready(conn):
+            conn.execute(f"DROP TABLE {_FTS_TABLE}")
+        if not _fts_table_exists(conn):
+            conn.execute(f"DROP TABLE IF EXISTS {_FTS_META_TABLE}")
+            _create_fts_v2(conn)
         conn.execute(f"DELETE FROM {_FTS_TABLE} WHERE tenant_id = ?", (tenant_id,))
         for row in rows:
             body = _decode_text(row.get("content"))
@@ -103,8 +162,9 @@ def build_claim_fts_index(
             if not text:
                 continue
             conn.execute(
-                f"INSERT INTO {_FTS_TABLE}(claim_id, tenant_id, body) VALUES (?, ?, ?)",
-                (str(row["claim_id"]), tenant_id, text),
+                f"INSERT INTO {_FTS_TABLE}(claim_id, tenant_id, body, body_stem) "
+                "VALUES (?, ?, ?, ?)",
+                (str(row["claim_id"]), tenant_id, text, stem_text(text)),
             )
             indexed += 1
     return {"indexed_claims": indexed, "fts_table": _FTS_TABLE}
@@ -114,7 +174,7 @@ def fts_index_present(store: PersonalMemoryStore | None = None) -> bool:
     memory = _memory(store)
     conn = memory._connect()
     try:
-        return _fts_table_exists(conn)
+        return _fts_v2_ready(conn)
     finally:
         conn.close()
 
@@ -146,9 +206,8 @@ def rank_claims_fts(
     lim = validate_list_limit(limit)
     query_tokens = tokenize_query(query)
     entities = extract_entities(query)
-    try:
-        match_expr = _fts_query_terms(query)
-    except ValueError:
+    match_expr = _fts_match_expr(query)
+    if match_expr is None:
         return []
     authorized = query_claims(
         actor,
@@ -166,7 +225,7 @@ def rank_claims_fts(
     scored: list[dict[str, object]] = []
     with memory._tx() as conn:
         tenant_id = memory._ensure_principal_on(conn, actor)
-        if not _fts_table_exists(conn):
+        if not _fts_v2_ready(conn):
             return rank_claims(
                 actor,
                 query,

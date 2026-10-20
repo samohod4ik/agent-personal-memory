@@ -1292,6 +1292,33 @@ class PersonalMemoryStore:
             policy_reason="not_found",
         )
 
+    def _sync_claim_fts_on(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        tenant_id: str,
+        claim_id: str,
+        state: MemoryState,
+        sensitivity: str,
+        content: bytes,
+        explanation: str,
+    ) -> None:
+        from .fts_index import sync_claim_fts
+
+        text: str | None = None
+        if state in ACTIVE_READ_STATES and sensitivity != "restricted":
+            try:
+                body = content.decode("utf-8")
+            except UnicodeDecodeError:
+                body = ""
+            text = f"{body}\n{explanation}".strip() or None
+        sync_claim_fts(
+            conn,
+            tenant_id=tenant_id,
+            claim_id=claim_id,
+            text=text,
+        )
+
     def create_candidate(
         self,
         actor: Actor,
@@ -1371,6 +1398,15 @@ class PersonalMemoryStore:
                     target_id=claim_id,
                     outcome="created",
                     policy_reason="",
+                )
+                self._sync_claim_fts_on(
+                    conn,
+                    tenant_id=tenant_id,
+                    claim_id=claim_id,
+                    state=MemoryState.CANDIDATE,
+                    sensitivity=fields["sensitivity"],
+                    content=fields["content"],
+                    explanation=fields["explanation"],
                 )
                 return self._claim_result(
                     claim_id=claim_id,
@@ -1513,6 +1549,15 @@ class PersonalMemoryStore:
                         outcome="confirmed",
                         policy_reason="",
                     )
+                    self._sync_claim_fts_on(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=str(claim_row["id"]),
+                        state=MemoryState.CONFIRMED,
+                        sensitivity=str(newest["sensitivity"]),
+                        content=content,
+                        explanation=explanation,
+                    )
                     return self._claim_result(
                         claim_id=str(claim_row["id"]),
                         claim_version_id=version_id,
@@ -1642,6 +1687,15 @@ class PersonalMemoryStore:
                         target_id=version_id,
                         outcome="superseded",
                         policy_reason="",
+                    )
+                    self._sync_claim_fts_on(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=str(claim_row["id"]),
+                        state=previous_state,
+                        sensitivity=fields["sensitivity"] or str(newest["sensitivity"]),
+                        content=fields["content"],
+                        explanation=fields["explanation"],
                     )
                     return self._claim_result(
                         claim_id=str(claim_row["id"]),
