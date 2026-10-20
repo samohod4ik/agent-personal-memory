@@ -97,6 +97,7 @@ def _persist_insight(
     store: PersonalMemoryStore,
     mode: str,
     existing: set[str],
+    judge: object = None,
 ) -> dict[str, object] | None:
     norm = normalize_insight_text(insight.content)
     if not norm or norm in existing:
@@ -127,20 +128,31 @@ def _persist_insight(
         source_ids=[source_id],
         expires_at=insight_expires_at(),
     )
-    if mode == MEMORY_MODE_AUTO_INSIGHT:
+    from .reconcile import DEFAULT_JUDGE, propose_reconciliations
+
+    reconciliations = propose_reconciliations(
+        actor,
+        str(created["claim_id"]),
+        judge=judge or DEFAULT_JUDGE,
+        store=store,
+    )
+    if mode == MEMORY_MODE_AUTO_INSIGHT and not reconciliations:
         created = store.confirm_claim(
             actor,
             str(created["claim_id"]),
             reliable_source_id=source_id,
         )
     existing.add(norm)
-    return created
+    result = dict(created)
+    result["reconciliations"] = reconciliations
+    return result
 
 
 def learn_from_turn(
     actor: Actor,
     turn_text: str,
     *,
+    judge: object = None,
     store: PersonalMemoryStore,
 ) -> dict[str, Any]:
     memory = store
@@ -164,6 +176,7 @@ def learn_from_turn(
             store=memory,
             mode=mode,
             existing=existing,
+            judge=judge,
         )
         if created is not None:
             persisted.append(created)
@@ -175,6 +188,7 @@ def remember_personal_insight(
     content: object,
     *,
     claim_kind: object = "confirmed_fact",
+    judge: object = None,
     language: object = "en",
     store: PersonalMemoryStore,
 ) -> dict[str, object]:
@@ -199,6 +213,7 @@ def remember_personal_insight(
         store=memory,
         mode=mode,
         existing=existing,
+        judge=judge,
     )
     if created is None:
         raise ValidationError("content: already remembered")

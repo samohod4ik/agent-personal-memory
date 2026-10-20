@@ -25,6 +25,7 @@ REQUIRED_TABLES = (
     "memory_keys",
     "memory_schema",
     "memory_deletion_manifest",
+    "memory_claim_links",
 )
 
 ACTOR_FIXTURES = (
@@ -58,8 +59,8 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
 
     def test_fresh_schema_creates_required_tables_without_fts(self) -> None:
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 4)
-        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 4)
+        self.assertEqual(store.SCHEMA_VERSION, 5)
+        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 5)
         conn = store._connect()
         try:
             names = {
@@ -75,7 +76,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
                 msg="plaintext FTS/search shadows are forbidden",
             )
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 4)
+            self.assertEqual(int(version), 5)
             index_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
                 "AND name = 'idx_memory_sources_lookup'"
@@ -115,7 +116,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM memory_principals").fetchone()[0]
             self.assertEqual(count, 1)
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 4)
+            self.assertEqual(int(version), 5)
         finally:
             conn.close()
 
@@ -195,7 +196,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
         source = Path(store_module.__file__).read_text(encoding="utf-8")
         self.assertIn("BEGIN IMMEDIATE", source)
 
-    def test_v1_database_upgrades_in_place_to_v4(self) -> None:
+    def test_v1_database_upgrades_in_place_to_v5(self) -> None:
         from agent_personal_memory.store import _CREATE_SCHEMA_SQL
 
         db_path = self.data_dir / "personal_memory.db"
@@ -209,11 +210,11 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             probe.close()
 
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 4)
+        self.assertEqual(store.SCHEMA_VERSION, 5)
         conn = store._connect()
         try:
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 4)
+            self.assertEqual(int(version), 5)
             names = {
                 row[0]
                 for row in conn.execute("SELECT name FROM sqlite_master")
@@ -222,11 +223,28 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             self.assertIn("trg_source_versions_tenant_insert", names)
             self.assertIn("trg_source_versions_tenant_update", names)
             self.assertIn("memory_deletion_manifest", names)
+            self.assertIn("memory_claim_links", names)
+            self.assertIn("idx_memory_claim_links_to", names)
+            self.assertIn("idx_memory_claim_links_from", names)
+            self.assertIn("trg_claim_links_tenant_insert", names)
+            self.assertIn("trg_claim_links_tenant_update", names)
             columns = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(memory_principals)")
             }
             self.assertIn("memory_mode", columns)
+            claim_version_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(memory_claim_versions)")
+            }
+            self.assertIn("change_reason", claim_version_columns)
+            fts_shadows = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                )
+            }
+            self.assertFalse(any("fts" in name.lower() for name in fts_shadows))
         finally:
             conn.close()
 

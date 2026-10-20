@@ -56,7 +56,7 @@ from .validation import (
 
 logger = logging.getLogger("plugins.personal-memory")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _CREATE_SCHEMA_SQL = (
     """
@@ -230,6 +230,65 @@ _V4_SCHEMA_SQL = (
     """,
 )
 
+_V5_SCHEMA_SQL = (
+    """
+    ALTER TABLE memory_claim_versions
+    ADD COLUMN change_reason TEXT
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_claim_links (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        from_claim_id TEXT NOT NULL,
+        to_claim_id TEXT NOT NULL,
+        relation TEXT NOT NULL CHECK (relation = 'supersedes'),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+        to_version INTEGER NOT NULL,
+        origin TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        UNIQUE (tenant_id, from_claim_id, to_claim_id),
+        FOREIGN KEY (tenant_id) REFERENCES memory_principals(id),
+        FOREIGN KEY (from_claim_id) REFERENCES memory_claims(id),
+        FOREIGN KEY (to_claim_id) REFERENCES memory_claims(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_claim_links_to
+      ON memory_claim_links(tenant_id, to_claim_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_memory_claim_links_from
+      ON memory_claim_links(tenant_id, from_claim_id)
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_claim_links_tenant_insert
+    BEFORE INSERT ON memory_claim_links
+    FOR EACH ROW
+    WHEN NEW.tenant_id <> (
+        SELECT tenant_id FROM memory_claims WHERE id = NEW.from_claim_id
+    ) OR NEW.tenant_id <> (
+        SELECT tenant_id FROM memory_claims WHERE id = NEW.to_claim_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'claim link tenant mismatch');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_claim_links_tenant_update
+    BEFORE UPDATE ON memory_claim_links
+    FOR EACH ROW
+    WHEN NEW.tenant_id <> (
+        SELECT tenant_id FROM memory_claims WHERE id = NEW.from_claim_id
+    ) OR NEW.tenant_id <> (
+        SELECT tenant_id FROM memory_claims WHERE id = NEW.to_claim_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'claim link tenant mismatch');
+    END
+    """,
+)
+
 AUDIT_ACTIONS = frozenset(
     {
         "source.register",
@@ -245,10 +304,21 @@ AUDIT_ACTIONS = frozenset(
         "owner.export",
         "claim.explain",
         "actor.set_memory_mode",
+        "claim.link_propose",
+        "claim.link_accept",
+        "claim.link_reject",
     }
 )
 AUDIT_TARGET_KINDS = frozenset(
-    {"source", "source_version", "claim", "claim_version", "export", "principal"}
+    {
+        "source",
+        "source_version",
+        "claim",
+        "claim_version",
+        "export",
+        "principal",
+        "claim_link",
+    }
 )
 AUDIT_OUTCOMES = frozenset(
     {
@@ -263,6 +333,9 @@ AUDIT_OUTCOMES = frozenset(
         "exported",
         "explained",
         "updated",
+        "proposed",
+        "accepted",
+        "declined",
     }
 )
 AUDIT_REASONS = frozenset(
@@ -382,6 +455,9 @@ class PersonalMemoryStore:
                         conn.execute(statement)
                 if current < 4:
                     for statement in _V4_SCHEMA_SQL:
+                        conn.execute(statement)
+                if current < 5:
+                    for statement in _V5_SCHEMA_SQL:
                         conn.execute(statement)
                 if current < self.SCHEMA_VERSION:
                     conn.execute(
@@ -1764,6 +1840,152 @@ class PersonalMemoryStore:
                 }
                 for row in rows
             ]
+
+    def _lookup_claim_link(
+        self, conn: sqlite3.Connection, tenant_id: str, from_claim_id: str, to_claim_id: str
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT id, tenant_id, from_claim_id, to_claim_id, relation, "
+            "status, to_version, origin, created_at, resolved_at "
+            "FROM memory_claim_links "
+            "WHERE tenant_id = ? AND from_claim_id = ? AND to_claim_id = ?",
+            (tenant_id, from_claim_id, to_claim_id),
+        ).fetchone()
+
+    @staticmethod
+    def _link_result(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "link_id": str(row["id"]),
+            "from_claim_id": str(row["from_claim_id"]),
+            "to_claim_id": str(row["to_claim_id"]),
+            "relation": str(row["relation"]),
+            "status": str(row["status"]),
+            "origin": str(row["origin"]),
+            "to_version": int(row["to_version"]),
+            "created_at": str(row["created_at"]),
+            "resolved_at": row["resolved_at"],
+        }
+
+    def create_claim_link(
+        self,
+        actor: Actor,
+        *,
+        from_claim_id: str,
+        to_claim_id: str,
+        origin: str,
+    ) -> dict[str, object]:
+        pending_error: Exception | None = None
+        with self._tx() as conn:
+            tenant_id = self._ensure_principal_on(conn, actor)
+            if (
+                not isinstance(from_claim_id, str)
+                or not from_claim_id
+                or not isinstance(to_claim_id, str)
+                or not to_claim_id
+                or from_claim_id == to_claim_id
+                or not isinstance(origin, str)
+                or not origin.strip()
+            ):
+                self._append_audit(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=tenant_id,
+                    action="claim.link_propose",
+                    target_kind="claim_link",
+                    target_id="",
+                    outcome="rejected",
+                    policy_reason="validation_failed",
+                )
+                pending_error = ValidationError("claim link: invalid")
+            if pending_error is None:
+                from_row = self._lookup_claim(conn, tenant_id, from_claim_id)
+                to_row = self._lookup_claim(conn, tenant_id, to_claim_id)
+                if (
+                    from_row is None
+                    or from_row["deleted_at"] is not None
+                    or to_row is None
+                    or to_row["deleted_at"] is not None
+                ):
+                    self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=tenant_id,
+                        action="claim.link_propose",
+                        target_kind="claim_link",
+                        target_id="",
+                        outcome="denied",
+                        policy_reason="not_found",
+                    )
+                    pending_error = NotFoundError("Claim not found")
+            if pending_error is None:
+                existing = self._lookup_claim_link(
+                    conn, tenant_id, from_claim_id, to_claim_id
+                )
+                if existing is not None:
+                    return self._link_result(existing)
+                newest = self._newest_claim_version(conn, tenant_id, to_claim_id)
+                link_id = str(uuid.uuid4())
+                now = utcnow_iso()
+                conn.execute(
+                    "INSERT INTO memory_claim_links("
+                    "id, tenant_id, from_claim_id, to_claim_id, relation, "
+                    "status, to_version, origin, created_at, resolved_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        link_id,
+                        tenant_id,
+                        from_claim_id,
+                        to_claim_id,
+                        "supersedes",
+                        "pending",
+                        int(newest["version"]),
+                        origin,
+                        now,
+                        None,
+                    ),
+                )
+                self._append_audit(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=tenant_id,
+                    action="claim.link_propose",
+                    target_kind="claim_link",
+                    target_id=link_id,
+                    outcome="proposed",
+                    policy_reason="",
+                )
+                row = self._lookup_claim_link(
+                    conn, tenant_id, from_claim_id, to_claim_id
+                )
+                return self._link_result(row)
+        raise pending_error
+
+    def list_claim_links(
+        self,
+        actor: Actor,
+        *,
+        status: str | None = "pending",
+        claim_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        if status is not None and status not in ("pending", "accepted", "rejected"):
+            raise ValidationError("link status: invalid")
+        with self._tx() as conn:
+            tenant_id = self._ensure_principal_on(conn, actor)
+            sql = (
+                "SELECT id, tenant_id, from_claim_id, to_claim_id, relation, "
+                "status, to_version, origin, created_at, resolved_at "
+                "FROM memory_claim_links WHERE tenant_id = ?"
+            )
+            params: list[object] = [tenant_id]
+            if status is not None:
+                sql += " AND status = ?"
+                params.append(status)
+            if claim_id is not None:
+                sql += " AND (from_claim_id = ? OR to_claim_id = ?)"
+                params.extend([claim_id, claim_id])
+            sql += " ORDER BY created_at DESC, rowid DESC"
+            rows = conn.execute(sql, params).fetchall()
+            return [self._link_result(row) for row in rows]
 
     def _try_decrypt_source_version(
         self,

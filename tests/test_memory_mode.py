@@ -98,13 +98,13 @@ class MemoryModeStoreTests(unittest.TestCase):
             probe.close()
 
         store = PersonalMemoryStore(data_dir=data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 4)
-        self.assertEqual(SCHEMA_VERSION, 4)
+        self.assertEqual(store.SCHEMA_VERSION, 5)
+        self.assertEqual(SCHEMA_VERSION, 5)
         self.assertEqual(store.get_memory_mode(ALICE), MEMORY_MODE_AUTO_INSIGHT)
         conn = store._connect()
         try:
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 4)
+            self.assertEqual(int(version), 5)
             columns = {
                 row[1]
                 for row in conn.execute("PRAGMA table_info(memory_principals)")
