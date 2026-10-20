@@ -21,11 +21,12 @@ from agent_personal_memory.confirmation import (
     consume_delete_request,
     reset_registry,
 )
-from agent_personal_memory.export import export_owner_data
+from agent_personal_memory.export import explain_claim, export_owner_data
 from agent_personal_memory.fts_index import (
     build_claim_fts_index,
     rank_claims_fts,
 )
+from agent_personal_memory.history import personal_memory_history
 from agent_personal_memory.learn import remember_personal_insight
 from agent_personal_memory.lifecycle import MemoryState
 from agent_personal_memory.mutations import (
@@ -42,6 +43,7 @@ from agent_personal_memory.reconcile import (
 from agent_personal_memory.store import NotFoundError, PersonalMemoryStore
 from agent_personal_memory.types import Actor
 from agent_personal_memory.validation import ValidationError, content_hash_for
+from tests.test_schema_v5 import _downgrade_to_v4
 
 TENANT_A = Actor("test", "user-a")
 TENANT_B = Actor("test", "user-b")
@@ -518,6 +520,411 @@ class ExportAndErasureTests(unittest.TestCase):
             TENANT_A, str(k1["claim_id"]), store=self.store
         )
         self.assertEqual(kept["state"], "superseded")
+
+
+class HistoryChainTests(unittest.TestCase):
+    """S-HISTORY 1: candidate -> confirm -> correct history trail."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-chain-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+        source = _source(self.store, TENANT_A, "hist-chain-src")
+        self.source_id = str(source["source_id"])
+        created = self.store.create_candidate(
+            TENANT_A,
+            claim_kind="confirmed_fact",
+            content="я предпочитаю чай".encode("utf-8"),
+            confidence=0.9,
+            explanation="seed",
+            sensitivity="normal",
+            source_ids=[self.source_id],
+            expires_at=EXPIRES,
+        )
+        self.claim_id = str(created["claim_id"])
+        self.store.confirm_claim(
+            TENANT_A, self.claim_id, reliable_source_id=self.source_id
+        )
+        self.store.correct_claim(
+            TENANT_A,
+            self.claim_id,
+            content="я предпочитаю кофе".encode("utf-8"),
+            explanation="owner fix",
+            source_ids=[self.source_id],
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_collapsed_history_two_entries(self) -> None:
+        result = personal_memory_history(
+            TENANT_A, self.claim_id, store=self.store
+        )
+        self.assertEqual(result["claim_id"], self.claim_id)
+        self.assertEqual(result["current_claim_id"], self.claim_id)
+        entries = result["entries"]
+        self.assertEqual(
+            [item["reason"] for item in entries], ["created", "changed"]
+        )
+        self.assertEqual([item["version"] for item in entries], [1, 3])
+        self.assertEqual(
+            [item["content"] for item in entries],
+            ["я предпочитаю чай", "я предпочитаю кофе"],
+        )
+        self.assertIsNotNone(entries[0]["promoted_at"])
+        self.assertIsNone(entries[0]["linked_claim_id"])
+        self.assertIsNone(entries[1]["promoted_at"])
+        self.assertIsNone(entries[1]["linked_claim_id"])
+        self.assertEqual(entries[1]["state"], "confirmed")
+        ats = [item["at"] for item in entries]
+        self.assertEqual(ats, sorted(ats))
+        self.assertTrue(all(item["inferred"] is False for item in entries))
+
+    def test_uncollapsed_history_three_entries(self) -> None:
+        result = personal_memory_history(
+            TENANT_A,
+            self.claim_id,
+            collapse_promoted=False,
+            store=self.store,
+        )
+        entries = result["entries"]
+        self.assertEqual(
+            [item["reason"] for item in entries],
+            ["created", "promoted", "changed"],
+        )
+        # The (at, claim_id, version) sort pins version order on ties.
+        self.assertEqual([item["version"] for item in entries], [1, 2, 3])
+        self.assertEqual(
+            [item["content"] for item in entries],
+            ["я предпочитаю чай", "я предпочитаю чай", "я предпочитаю кофе"],
+        )
+        self.assertEqual(
+            [item["state"] for item in entries],
+            ["superseded", "superseded", "confirmed"],
+        )
+        for item in entries:
+            self.assertIsNone(item["promoted_at"])
+            self.assertIsNone(item["linked_claim_id"])
+
+    def test_query_mode_selects_the_claim_deterministically(self) -> None:
+        _candidate(self.store, TENANT_A, CAT, "hist-chain-cat")
+        first = personal_memory_history(
+            TENANT_A, query="кофе", store=self.store
+        )
+        second = personal_memory_history(
+            TENANT_A, query="кофе", store=self.store
+        )
+        self.assertEqual(first["claim_id"], self.claim_id)
+        self.assertEqual(second["claim_id"], self.claim_id)
+
+    def test_query_mode_no_match_is_not_found(self) -> None:
+        with self.assertRaises(NotFoundError) as exc:
+            personal_memory_history(
+                TENANT_A, query="несуществующееслово", store=self.store
+            )
+        self.assertEqual(str(exc.exception), "Claim not found")
+
+
+class HistoryLinkTests(unittest.TestCase):
+    """S-HISTORY 2 + 8: accepted-link traversal in both directions."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-link-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+        self.k1 = remember_personal_insight(TENANT_A, KAZAN, store=self.store)
+        self.k2 = remember_personal_insight(
+            TENANT_A, PERM_NEG, store=self.store
+        )
+        self.k1_id = str(self.k1["claim_id"])
+        self.k2_id = str(self.k2["claim_id"])
+        link = self.k2["reconciliations"][0]
+        accept_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_history_from_either_side_is_identical(self) -> None:
+        from_k1 = personal_memory_history(
+            TENANT_A, self.k1_id, store=self.store
+        )
+        from_k2 = personal_memory_history(
+            TENANT_A, self.k2_id, store=self.store
+        )
+        self.assertEqual(from_k1["entries"], from_k2["entries"])
+        self.assertEqual(from_k1["current_claim_id"], self.k2_id)
+        self.assertEqual(from_k2["current_claim_id"], self.k2_id)
+        claim_ids = {item["claim_id"] for item in from_k1["entries"]}
+        self.assertEqual(claim_ids, {self.k1_id, self.k2_id})
+        supersede = [
+            item
+            for item in from_k1["entries"]
+            if item["claim_id"] == self.k1_id and item["reason"] == "changed"
+        ]
+        self.assertEqual(len(supersede), 1)
+        self.assertEqual(supersede[0]["linked_claim_id"], self.k2_id)
+
+    def test_restricted_linked_claim_disappears(self) -> None:
+        source = _source(self.store, TENANT_A, "hist-restrict-src")
+        self.store.correct_claim(
+            TENANT_A,
+            self.k2_id,
+            content="секретный адрес".encode("utf-8"),
+            explanation="hide",
+            source_ids=[str(source["source_id"])],
+            sensitivity="restricted",
+        )
+        result = personal_memory_history(
+            TENANT_A, self.k1_id, store=self.store
+        )
+        self.assertEqual(result["current_claim_id"], self.k1_id)
+        self.assertTrue(
+            all(item["claim_id"] != self.k2_id for item in result["entries"])
+        )
+        self.assertTrue(
+            any(item["claim_id"] == self.k1_id for item in result["entries"])
+        )
+
+
+class HistoryV4Tests(unittest.TestCase):
+    """S-HISTORY 4: inferred reasons on a v4-downgraded store."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-v4-")
+        self.data_dir = Path(self.tmp.name)
+        self.db_path = self.data_dir / "personal_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_downgraded_store_reports_inferred_reasons(self) -> None:
+        store = PersonalMemoryStore(data_dir=self.data_dir)
+        source = _source(store, TENANT_A, "hist-v4-src")
+        chain = store.create_candidate(
+            TENANT_A,
+            claim_kind="confirmed_fact",
+            content="я предпочитаю чай".encode("utf-8"),
+            confidence=0.9,
+            explanation="seed",
+            sensitivity="normal",
+            source_ids=[str(source["source_id"])],
+            expires_at=EXPIRES,
+        )
+        chain_id = str(chain["claim_id"])
+        store.confirm_claim(
+            TENANT_A, chain_id, reliable_source_id=str(source["source_id"])
+        )
+        store.correct_claim(
+            TENANT_A,
+            chain_id,
+            content="я предпочитаю кофе".encode("utf-8"),
+            explanation="owner fix",
+            source_ids=[str(source["source_id"])],
+        )
+        _downgrade_to_v4(self.db_path)
+        reopened = PersonalMemoryStore(data_dir=self.data_dir)
+        result = personal_memory_history(
+            TENANT_A,
+            chain_id,
+            collapse_promoted=False,
+            store=reopened,
+        )
+        self.assertEqual(
+            [item["reason"] for item in result["entries"]],
+            ["created", "promoted", "changed"],
+        )
+        self.assertTrue(all(item["inferred"] for item in result["entries"]))
+
+
+class HistoryVisibilityTests(unittest.TestCase):
+    """S-HISTORY 5+6: explain history key, denials, active reads."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-vis-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+        self.k1 = remember_personal_insight(TENANT_A, KAZAN, store=self.store)
+        self.k2 = remember_personal_insight(
+            TENANT_A, PERM_NEG, store=self.store
+        )
+        self.k1_id = str(self.k1["claim_id"])
+        self.k2_id = str(self.k2["claim_id"])
+        link = self.k2["reconciliations"][0]
+        accept_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+        restricted_source = _source(
+            self.store, TENANT_A, "hist-restricted-src"
+        )
+        restricted = self.store.create_candidate(
+            TENANT_A,
+            claim_kind="confirmed_fact",
+            content="секретный адрес".encode("utf-8"),
+            confidence=0.9,
+            explanation="seed",
+            sensitivity="restricted",
+            source_ids=[str(restricted_source["source_id"])],
+            expires_at=EXPIRES,
+        )
+        self.restricted_id = str(restricted["claim_id"])
+        expired = _candidate(self.store, TENANT_A, CAT, "hist-expired")
+        self.expired_id = str(expired["claim_id"])
+        conn = self.store._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_claim_versions SET expires_at = ? "
+                "WHERE claim_id = ?",
+                ("2020-01-01T00:00:00Z", self.expired_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        retracted = _candidate(
+            self.store, TENANT_A, "я живу в Сочи", "hist-retracted"
+        )
+        self.retracted_id = str(retracted["claim_id"])
+        retract_personal_memory(
+            TENANT_A, self.retracted_id, store=self.store
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_explain_claim_carries_history_and_superseded_state(self) -> None:
+        explained = explain_claim(TENANT_A, self.k2_id, store=self.store)
+        self.assertIn("history", explained)
+        self.assertTrue(explained["history"])
+        explained_k1 = explain_claim(TENANT_A, self.k1_id, store=self.store)
+        self.assertEqual(explained_k1["state"], "superseded")
+        self.assertIn("history", explained_k1)
+        got = get_authorized_claim(TENANT_A, self.k1_id, store=self.store)
+        self.assertEqual(got["state"], "superseded")
+
+    def test_explain_restricted_and_expired_still_deny(self) -> None:
+        for claim_id in (self.restricted_id, self.expired_id):
+            with self.subTest(claim_id=claim_id):
+                with self.assertRaises(NotFoundError) as denied:
+                    explain_claim(TENANT_A, claim_id, store=self.store)
+                self.assertEqual(str(denied.exception), "Claim not found")
+
+    def test_history_denials_are_byte_identical(self) -> None:
+        missing = "00000000-0000-4000-8000-000000000000"
+        with self.assertRaises(NotFoundError) as missing_exc:
+            personal_memory_history(TENANT_A, missing, store=self.store)
+        self.assertEqual(str(missing_exc.exception), "Claim not found")
+        cases = {
+            "foreign": (TENANT_B, self.k1_id),
+            "restricted": (TENANT_A, self.restricted_id),
+            "expired": (TENANT_A, self.expired_id),
+        }
+        for name, (actor, claim_id) in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaises(NotFoundError) as denied:
+                    personal_memory_history(actor, claim_id, store=self.store)
+                self.assertEqual(str(denied.exception), "Claim not found")
+                self.assertEqual(
+                    repr(denied.exception), repr(missing_exc.exception)
+                )
+
+    def test_active_reads_exclude_superseded_and_retracted(self) -> None:
+        ranked_ids = {
+            str(item["claim_id"])
+            for item in rank_claims(TENANT_A, "живу", store=self.store)
+        }
+        self.assertNotIn(self.k1_id, ranked_ids)
+        self.assertNotIn(self.retracted_id, ranked_ids)
+        active_ids = {
+            str(item["claim_id"])
+            for item in self.store.list_active_claims(TENANT_A)
+        }
+        self.assertNotIn(self.k1_id, active_ids)
+        self.assertNotIn(self.retracted_id, active_ids)
+
+
+class HistoryValidationTests(unittest.TestCase):
+    """S-HISTORY 7: exactly one selector; collapse flag is bool."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-val-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_requires_exactly_one_selector(self) -> None:
+        claim = _candidate(self.store, TENANT_A, CAT, "hist-val")
+        claim_id = str(claim["claim_id"])
+        with self.assertRaises(ValidationError):
+            personal_memory_history(
+                TENANT_A, claim_id, query="кот", store=self.store
+            )
+        with self.assertRaises(ValidationError):
+            personal_memory_history(TENANT_A, store=self.store)
+        with self.assertRaises(ValidationError):
+            personal_memory_history(TENANT_A, "", store=self.store)
+        with self.assertRaises(ValidationError):
+            personal_memory_history(TENANT_A, query="", store=self.store)
+
+    def test_collapse_promoted_must_be_bool(self) -> None:
+        claim = _candidate(self.store, TENANT_A, CAT, "hist-val-bool")
+        with self.assertRaises(ValidationError):
+            personal_memory_history(
+                TENANT_A,
+                str(claim["claim_id"]),
+                collapse_promoted="yes",
+                store=self.store,
+            )
+
+
+class HistoryAuditTests(unittest.TestCase):
+    """S-HISTORY 9: one explained audit on success, denial on refusal."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-history-audit-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _history_audit(self) -> list[sqlite3.Row]:
+        conn = self.store._connect()
+        try:
+            return list(
+                conn.execute(
+                    "SELECT action, outcome, target_kind, target_id "
+                    "FROM memory_audit WHERE action = 'claim.history' "
+                    "ORDER BY rowid"
+                )
+            )
+        finally:
+            conn.close()
+
+    def test_success_appends_exactly_one_explained_row(self) -> None:
+        claim = _candidate(self.store, TENANT_A, CAT, "hist-audit")
+        claim_id = str(claim["claim_id"])
+        before = self._history_audit()
+        personal_memory_history(TENANT_A, claim_id, store=self.store)
+        after = self._history_audit()
+        self.assertEqual(len(after) - len(before), 1)
+        row = after[-1]
+        self.assertEqual(row["outcome"], "explained")
+        self.assertEqual(row["target_kind"], "claim")
+        self.assertEqual(row["target_id"], claim_id)
+
+    def test_denial_appends_denied_row_and_no_explained(self) -> None:
+        _candidate(self.store, TENANT_A, CAT, "hist-audit-deny")
+        before = self._history_audit()
+        with self.assertRaises(NotFoundError):
+            personal_memory_history(
+                TENANT_A,
+                "00000000-0000-4000-8000-000000000000",
+                store=self.store,
+            )
+        after = self._history_audit()
+        self.assertEqual(len(after) - len(before), 1)
+        self.assertEqual(after[-1]["outcome"], "denied")
+        self.assertFalse(
+            any(row["outcome"] == "explained" for row in after[len(before):])
+        )
 
 
 if __name__ == "__main__":

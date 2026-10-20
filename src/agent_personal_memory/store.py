@@ -2739,6 +2739,8 @@ class PersonalMemoryStore:
             }
 
     def explain_claim(self, actor: Actor, claim_id: str) -> dict[str, object]:
+        from .history import history_entries_on
+
         pending_error: Exception | None = None
         explanation: dict[str, object] | None = None
         with self._tx() as conn:
@@ -2779,6 +2781,13 @@ class PersonalMemoryStore:
                     "sources": self._owner_claim_provenance(
                         conn, tenant_id, str(row["id"])
                     ),
+                    "history": history_entries_on(
+                        self,
+                        conn,
+                        tenant_id,
+                        str(row["id"]),
+                        collapse_promoted=True,
+                    )["entries"],
                 }
                 self._append_audit(
                     conn,
