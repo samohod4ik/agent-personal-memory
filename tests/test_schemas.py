@@ -51,5 +51,73 @@ class PersonalMemorySchemaTests(unittest.TestCase):
                 self.assertNotIn(forbidden, packed)
 
 
+class ReconcileSurfaceSchemaTests(unittest.TestCase):
+    """The five reconcile/history owner-flow tools (issue #2/#3)."""
+
+    def test_five_new_tools_registered(self) -> None:
+        expected = {
+            "list_memory_reconciliations": ({"status", "language"}, []),
+            "accept_memory_reconciliation": (
+                {"link_id", "language"},
+                ["link_id"],
+            ),
+            "reject_memory_reconciliation": (
+                {"link_id", "language"},
+                ["link_id"],
+            ),
+            "personal_memory_history": (
+                {"claim_id", "query", "collapse_promoted"},
+                [],
+            ),
+            "retract_personal_memory": (
+                {"claim_id", "explanation", "language"},
+                ["claim_id"],
+            ),
+        }
+        for name, (props, required) in expected.items():
+            with self.subTest(tool=name):
+                schema = schemas.TOOL_SCHEMAS[name]
+                self.assertEqual(schema["name"], name)
+                params = schema["parameters"]
+                self.assertEqual(set(params["properties"]), props)
+                self.assertEqual(params["required"], required)
+                keys = {key.lower() for key in _walk(schema)}
+                for forbidden in FORBIDDEN:
+                    self.assertNotIn(forbidden, keys, name)
+                self.assertIn(
+                    "current session owner", schema["description"]
+                )
+
+    def test_reconcile_schema_details(self) -> None:
+        listing = schemas.TOOL_SCHEMAS["list_memory_reconciliations"]
+        props = listing["parameters"]["properties"]
+        self.assertEqual(
+            props["status"]["enum"], ["pending", "accepted", "rejected"]
+        )
+        self.assertEqual(props["language"]["enum"], ["en", "ru"])
+        history = schemas.TOOL_SCHEMAS["personal_memory_history"]
+        self.assertEqual(
+            history["parameters"]["properties"]["collapse_promoted"]["type"],
+            "boolean",
+        )
+        retract = schemas.TOOL_SCHEMAS["retract_personal_memory"]
+        self.assertEqual(
+            retract["parameters"]["properties"]["language"]["enum"],
+            ["en", "ru"],
+        )
+        remember = schemas.TOOL_SCHEMAS["remember_personal_insight"]
+        self.assertNotIn("judge", remember["parameters"]["properties"])
+        self.assertIn("reconciliations", remember["description"])
+
+    def test_states_enums_include_retracted(self) -> None:
+        for schema in (schemas.QUERY_CLAIMS_SCHEMA, schemas.RANK_CLAIMS_SCHEMA):
+            with self.subTest(schema=schema["name"]):
+                enum = schema["parameters"]["properties"]["states"]["items"][
+                    "enum"
+                ]
+                self.assertIn("retracted", enum)
+                self.assertIn("superseded", enum)
+
+
 if __name__ == "__main__":
     unittest.main()

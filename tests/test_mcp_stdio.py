@@ -445,7 +445,7 @@ class DispatchTests(unittest.TestCase):
 
     def test_tool_list_matches_canonical_surface(self) -> None:
         tools = self.surface.tool_schemas()
-        self.assertEqual(len(tools), 21)
+        self.assertEqual(len(tools), 26)
         self.assertEqual(
             [t["name"] for t in tools], list(apm.TOOL_SCHEMAS.keys())
         )
@@ -636,6 +636,71 @@ class DispatchTests(unittest.TestCase):
         self.assertIsInstance(item["content"], str)
         self.assertIn("coffee", item["content"])
 
+    def test_reconcile_history_and_retract_dispatch(self) -> None:
+        # The five owner-flow tools dispatch through getattr by name with
+        # the fixed store injected; every payload stays JSON-safe.
+        first = self.surface.call_tool(
+            "remember_personal_insight", {"content": "я живу в Казани"}
+        )
+        second = self.surface.call_tool(
+            "remember_personal_insight",
+            {"content": "я переехал в Пермь, больше не живу в Казани"},
+        )
+        self.assertEqual(second["state"], "candidate")
+        links = second["reconciliations"]
+        self.assertEqual(len(links), 1)
+        link_id = links[0]["link_id"]
+
+        listed = self.surface.call_tool("list_memory_reconciliations", {})
+        json.dumps(listed, ensure_ascii=False)
+        self.assertEqual(listed["count"], 1)
+        item = listed["items"][0]
+        self.assertEqual(item["link_id"], link_id)
+        self.assertIsInstance(item["new_content"], str)
+        self.assertEqual(
+            item["new_content"],
+            "я переехал в Пермь, больше не живу в Казани",
+        )
+        self.assertIsInstance(item["old_content"], str)
+        self.assertEqual(item["old_content"], "я живу в Казани")
+
+        with self.assertRaises(ValidationError):
+            self.surface.call_tool(
+                "accept_memory_reconciliation",
+                {"link_id": link_id, "tenant_id": "t9"},
+            )
+        accepted = self.surface.call_tool(
+            "accept_memory_reconciliation", {"link_id": link_id}
+        )
+        json.dumps(accepted)
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(accepted["new_state"], "confirmed")
+        self.assertEqual(accepted["old_state"], "superseded")
+        self.assertIsInstance(accepted["confirmation"], str)
+
+        history = self.surface.call_tool(
+            "personal_memory_history", {"claim_id": first["claim_id"]}
+        )
+        json.dumps(history, ensure_ascii=False)
+        self.assertEqual(history["current_claim_id"], second["claim_id"])
+        self.assertEqual(
+            {entry["claim_id"] for entry in history["entries"]},
+            {first["claim_id"], second["claim_id"]},
+        )
+
+        retracted = self.surface.call_tool(
+            "retract_personal_memory", {"claim_id": second["claim_id"]}
+        )
+        self.assertEqual(retracted["state"], "retracted")
+        rows = self.surface.call_tool(
+            "query_claims", {"states": ["retracted"]}
+        )
+        self.assertEqual(
+            [str(row["claim_id"]) for row in rows], [second["claim_id"]]
+        )
+        pending = self.surface.call_tool("list_memory_reconciliations", {})
+        self.assertEqual(pending["count"], 0)
+
     def test_non_utf8_snapshot_uses_base64_fallback(self) -> None:
         blob = b"\xff\xfe\x00\x89raw-blob"
         created = self.store.register_source(
@@ -796,7 +861,7 @@ class StdioServerTests(unittest.TestCase):
     def test_initialize_and_tools_list(self) -> None:
         self._handshake()
         tools = self._request("tools/list")["result"]["tools"]
-        self.assertEqual(len(tools), 21)
+        self.assertEqual(len(tools), 26)
         self.assertEqual({t["name"] for t in tools}, set(apm.TOOL_SCHEMAS))
         for tool in tools:
             props = set(tool["inputSchema"].get("properties", {}))
@@ -863,6 +928,66 @@ class StdioServerTests(unittest.TestCase):
         self.assertEqual(listed["count"], 1)
         self.assertIsInstance(listed["items"][0]["content"], str)
         self.assertIn("green tea", listed["items"][0]["content"])
+
+    def test_reconcile_surface_over_stdio(self) -> None:
+        self._handshake()
+        names = {
+            tool["name"]
+            for tool in self._request("tools/list")["result"]["tools"]
+        }
+        for name in (
+            "list_memory_reconciliations",
+            "accept_memory_reconciliation",
+            "reject_memory_reconciliation",
+            "personal_memory_history",
+            "retract_personal_memory",
+        ):
+            self.assertIn(name, names)
+
+        first = self._call_tool(
+            "remember_personal_insight", {"content": "я живу в Казани"}
+        )
+        second = self._call_tool(
+            "remember_personal_insight",
+            {"content": "я переехал в Пермь, больше не живу в Казани"},
+        )
+        link_id = second["reconciliations"][0]["link_id"]
+
+        listed = self._call_tool("list_memory_reconciliations", {})
+        self.assertEqual(listed["count"], 1)
+        item = listed["items"][0]
+        self.assertEqual(item["link_id"], link_id)
+        self.assertIsInstance(item["new_content"], str)
+        self.assertEqual(
+            item["new_content"],
+            "я переехал в Пермь, больше не живу в Казани",
+        )
+        self.assertEqual(item["old_content"], "я живу в Казани")
+
+        denied = self._call_tool_error(
+            "accept_memory_reconciliation",
+            {"link_id": link_id, "actor": _OTHER_USER_ID},
+        )
+        self.assertIn(
+            "unexpected field", json.dumps(denied, ensure_ascii=False)
+        )
+
+        accepted = self._call_tool(
+            "accept_memory_reconciliation", {"link_id": link_id}
+        )
+        self.assertEqual(accepted["status"], "accepted")
+        self.assertEqual(accepted["new_state"], "confirmed")
+        self.assertEqual(accepted["old_state"], "superseded")
+
+        history = self._call_tool(
+            "personal_memory_history", {"claim_id": first["claim_id"]}
+        )
+        self.assertEqual(history["current_claim_id"], second["claim_id"])
+
+        retracted = self._call_tool(
+            "retract_personal_memory", {"claim_id": second["claim_id"]}
+        )
+        self.assertEqual(retracted["state"], "retracted")
 
     def test_wrong_nonce_denied_over_stdio(self) -> None:
         self._handshake()

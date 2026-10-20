@@ -16,6 +16,21 @@ from pathlib import Path
 import agent_personal_memory as apm
 from agent_personal_memory import schemas
 
+# Reconcile/history public surface (issue #2/#3): the five owner-flow
+# tool functions plus the proposal/judge names the package re-exports.
+RECONCILE_SURFACE_NAMES = (
+    "list_memory_reconciliations",
+    "accept_memory_reconciliation",
+    "reject_memory_reconciliation",
+    "personal_memory_history",
+    "retract_personal_memory",
+    "propose_reconciliation",
+    "propose_reconciliations",
+    "ConflictJudge",
+    "SlotRuleJudge",
+    "Relation",
+)
+
 
 class ApiSurfaceTests(unittest.TestCase):
     def test_every_exported_name_resolves(self) -> None:
@@ -38,6 +53,13 @@ class ApiSurfaceTests(unittest.TestCase):
 
     def test_version_attribute(self) -> None:
         self.assertTrue(apm.__version__)
+
+    def test_reconcile_and_history_surface_names(self) -> None:
+        for name in RECONCILE_SURFACE_NAMES:
+            with self.subTest(name=name):
+                self.assertIn(name, apm.__all__)
+                self.assertTrue(hasattr(apm, name))
+                self.assertIsNotNone(getattr(apm, name))
 
     def test_personal_memory_confirm_schema_takes_only_nonce(self) -> None:
         self.assertIn("personal_memory_confirm", schemas.TOOL_SCHEMAS)
@@ -98,6 +120,9 @@ class ApiSurfaceFlowTests(unittest.TestCase):
             self.actor, "User prefers window seats.", store=self.store
         )
         claim_id = str(saved["claim_id"])
+        # The old call shape (no judge= kwarg) still works and always
+        # reports the reconcile proposals it created.
+        self.assertEqual(saved["reconciliations"], [])
 
         self.assertEqual(
             apm.get_memory_mode(self.actor, store=self.store)["mode"], "auto_insight"

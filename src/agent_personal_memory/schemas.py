@@ -281,6 +281,141 @@ REJECT_CANDIDATE_MEMORY_SCHEMA = {
     },
 }
 
+LIST_MEMORY_RECONCILIATIONS_SCHEMA = {
+    "name": "list_memory_reconciliations",
+    "description": (
+        "List proposed memory replacements for the current session "
+        "owner, with the new and old memory texts when they are visible."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["pending", "accepted", "rejected"],
+                "description": "Replacement status to list. Default pending.",
+            },
+            "language": {
+                "type": "string",
+                "enum": ["en", "ru"],
+                "description": "Response language",
+            },
+        },
+        "required": [],
+    },
+}
+
+ACCEPT_MEMORY_RECONCILIATION_SCHEMA = {
+    "name": "accept_memory_reconciliation",
+    "description": (
+        "Accept a proposed memory replacement for the current session "
+        "owner. Registers a user confirmation, promotes the new memory, "
+        "and keeps the old one as superseded history. Fails if the old "
+        "memory changed since the proposal."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "link_id": {
+                "type": "string",
+                "description": "Pending replacement id to accept",
+            },
+            "language": {
+                "type": "string",
+                "enum": ["en", "ru"],
+                "description": "Confirmation language",
+            },
+        },
+        "required": ["link_id"],
+    },
+}
+
+REJECT_MEMORY_RECONCILIATION_SCHEMA = {
+    "name": "reject_memory_reconciliation",
+    "description": (
+        "Reject a proposed memory replacement for the current session "
+        "owner. The proposal is marked rejected and both memories stay "
+        "unchanged."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "link_id": {
+                "type": "string",
+                "description": "Pending replacement id to reject",
+            },
+            "language": {
+                "type": "string",
+                "enum": ["en", "ru"],
+                "description": "Confirmation language",
+            },
+        },
+        "required": ["link_id"],
+    },
+}
+
+PERSONAL_MEMORY_HISTORY_SCHEMA = {
+    "name": "personal_memory_history",
+    "description": (
+        "Show the version history of one personal memory for the "
+        "current session owner, including accepted replacements. "
+        "Exactly one of claim_id or query is required; this is "
+        "enforced at call time."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "claim_id": {
+                "type": "string",
+                "description": "Claim id to show history for",
+            },
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search text that selects the memory to show "
+                    "history for"
+                ),
+            },
+            "collapse_promoted": {
+                "type": "boolean",
+                "description": (
+                    "Collapse the promotion step into the creation "
+                    "entry. Default true."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+RETRACT_PERSONAL_MEMORY_SCHEMA = {
+    "name": "retract_personal_memory",
+    "description": (
+        "Mark one personal memory of the current session owner as "
+        "retracted so it is no longer used. The content stays encrypted "
+        "until forget_personal_memory erases it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "claim_id": {
+                "type": "string",
+                "description": "Claim id to retract",
+            },
+            "explanation": {
+                "type": "string",
+                "description": "Optional reason for the retraction",
+            },
+            "language": {
+                "type": "string",
+                "enum": ["en", "ru"],
+                "description": "Confirmation language",
+            },
+        },
+        "required": ["claim_id"],
+    },
+}
+
 QUERY_CLAIMS_SCHEMA = {
     "name": "query_claims",
     "description": (
@@ -295,7 +430,13 @@ QUERY_CLAIMS_SCHEMA = {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["candidate", "confirmed", "superseded", "deleted"],
+                    "enum": [
+                        "candidate",
+                        "confirmed",
+                        "superseded",
+                        "deleted",
+                        "retracted",
+                    ],
                 },
                 "description": "Newest-version states to include",
             },
@@ -527,7 +668,9 @@ REMEMBER_PERSONAL_INSIGHT_SCHEMA = {
         "biography, and stable preferences. auto_insight saves confirmed; "
         "confirm_required saves "
         "a candidate. Rejects secrets, payment data, ID documents, and "
-        "another person's private data."
+        "another person's private data. The result carries "
+        "reconciliations: proposed replacements for an existing memory "
+        "that await the owner's accept or reject decision."
     ),
     "parameters": {
         "type": "object",
@@ -629,4 +772,9 @@ TOOL_SCHEMAS = {
     "assemble_context": ASSEMBLE_CONTEXT_SCHEMA,
     "rank_claims": RANK_CLAIMS_SCHEMA,
     "personal_memory_confirm": PERSONAL_MEMORY_CONFIRM_SCHEMA,
+    "list_memory_reconciliations": LIST_MEMORY_RECONCILIATIONS_SCHEMA,
+    "accept_memory_reconciliation": ACCEPT_MEMORY_RECONCILIATION_SCHEMA,
+    "reject_memory_reconciliation": REJECT_MEMORY_RECONCILIATION_SCHEMA,
+    "personal_memory_history": PERSONAL_MEMORY_HISTORY_SCHEMA,
+    "retract_personal_memory": RETRACT_PERSONAL_MEMORY_SCHEMA,
 }

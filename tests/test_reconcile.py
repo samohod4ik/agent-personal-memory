@@ -1206,13 +1206,19 @@ class ReconResolveTests(unittest.TestCase):
         self.assertEqual(item["to_claim_id"], k1["claim_id"])
         self.assertEqual(item["new_claim_id"], k2["claim_id"])
         self.assertEqual(item["old_claim_id"], k1["claim_id"])
-        self.assertEqual(_as_text(item["new_content"]), PERM_NEG)
-        self.assertEqual(_as_text(item["old_content"]), KAZAN)
+        self.assertIsInstance(item["new_content"], str)
+        self.assertIsInstance(item["old_content"], str)
+        self.assertEqual(item["new_content"], PERM_NEG)
+        self.assertEqual(item["old_content"], KAZAN)
         empty = list_memory_reconciliations(
             TENANT_A, status="accepted", store=self.store
         )
         self.assertEqual(empty["count"], 0)
         self.assertEqual(empty["items"], [])
+        with self.assertRaises(ValidationError):
+            list_memory_reconciliations(
+                TENANT_A, status="bogus", store=self.store
+            )
 
     def test_erase_old_claim_removes_link(self) -> None:
         k1, k2, link = self._linked_pair()

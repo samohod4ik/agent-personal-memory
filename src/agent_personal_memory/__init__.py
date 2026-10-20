@@ -44,6 +44,7 @@ from .engines.types import (
 from .erasure import ErasureReceipt
 from .export import explain_claim, export_owner_data
 from .fts_index import build_claim_fts_index, fts_index_present, rank_claims_fts
+from .history import personal_memory_history
 from .insight_extract import (
     ExtractedInsight,
     extract_insights,
@@ -62,6 +63,7 @@ from .mutations import (
     correct_personal_memory,
     do_not_remember,
     forget_personal_memory,
+    retract_personal_memory,
 )
 from .query import (
     get_authorized_claim,
@@ -70,6 +72,16 @@ from .query import (
     query_sources,
 )
 from .ranking import rank_claims
+from .reconcile import (
+    ConflictJudge,
+    Relation,
+    SlotRuleJudge,
+    accept_memory_reconciliation,
+    list_memory_reconciliations,
+    propose_reconciliation,
+    propose_reconciliations,
+    reject_memory_reconciliation,
+)
 from .review import (
     confirm_candidate_memory,
     list_candidate_memories,
@@ -128,6 +140,7 @@ __all__ = (
     "ConflictError",
     "CONFIRM_CANDIDATE_MEMORY_SCHEMA",
     "ConfirmNonce",
+    "ConflictJudge",
     "CORRECT_PERSONAL_MEMORY_SCHEMA",
     "DO_NOT_REMEMBER_SCHEMA",
     "DeleteRegistry",
@@ -157,14 +170,17 @@ __all__ = (
     "RANK_CLAIMS_SCHEMA",
     "REJECT_CANDIDATE_MEMORY_SCHEMA",
     "REMEMBER_PERSONAL_INSIGHT_SCHEMA",
+    "Relation",
     "RetrievalRequest",
     "SET_MEMORY_MODE_SCHEMA",
     "SchemaVersionError",
     "ScoredRecordId",
     "SessionBinding",
+    "SlotRuleJudge",
     "TOOL_SCHEMAS",
     "TrustedDeleteDenied",
     "ValidationError",
+    "accept_memory_reconciliation",
     "apply_snippet_acl",
     "assemble_context",
     "bm25_scores",
@@ -188,9 +204,13 @@ __all__ = (
     "insight_content_allowed",
     "learn_from_turn",
     "list_candidate_memories",
+    "list_memory_reconciliations",
     "list_personal_memories",
     "normalize_insight_text",
+    "personal_memory_history",
     "persist_shadow_candidates",
+    "propose_reconciliation",
+    "propose_reconciliations",
     "purge_shadow_projection",
     "query_claims",
     "query_sources",
@@ -198,8 +218,10 @@ __all__ = (
     "rank_claims_fts",
     "reject_candidate_memory",
     "reject_legacy_confirm",
+    "reject_memory_reconciliation",
     "remember_personal_insight",
     "reset_registry",
+    "retract_personal_memory",
     "score_locality",
     "set_memory_mode",
     "turn_has_blocked_secret",

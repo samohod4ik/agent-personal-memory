@@ -296,25 +296,28 @@ def reject_memory_reconciliation(
 
 def _visible_content(
     actor: Actor, claim_id: object, *, store: PersonalMemoryStore
-) -> object:
+) -> str | None:
     try:
         row = get_authorized_claim(
             actor, str(claim_id), include_content=True, store=store
         )
     except NotFoundError:
         return None
-    return row.get("content")
+    return _as_text(row.get("content"))
 
 
 def list_memory_reconciliations(
     actor: Actor,
     *,
-    status: object = "pending",
+    status: str | None = "pending",
     language: object = "en",
     store: PersonalMemoryStore,
 ) -> dict[str, object]:
-    """List reconciliation links with owner-readable claim contents;
-    invisible (restricted/expired/deleted) claims report content None."""
+    """List reconciliation links with owner-readable claim contents as
+    text (invalid utf-8 decodes to ""); invisible
+    (restricted/expired/deleted) claims report content None. ``status``
+    is validated by ``store.list_claim_links`` (pending/accepted/
+    rejected or None for all)."""
     lang = normalize_language(language)
     links = store.list_claim_links(actor, status=status)
     items: list[dict[str, object]] = []
