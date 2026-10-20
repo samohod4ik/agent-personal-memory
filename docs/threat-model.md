@@ -1,10 +1,12 @@
 # Threat model — agent-personal-memory
 
-Scope: the `agent_personal_memory` Python package (v0.1.0) and its optional
+Scope: the `agent_personal_memory` Python package (v0.2.0) and its optional
 MCP stdio server. This document describes what the shipped controls do —
 and, just as importantly, what they do not do. Companion documents:
 [adr/0002-core-boundary.md](adr/0002-core-boundary.md) (extraction
-boundary) and [adr/0008-physical-erasure-and-tombstones.md](adr/0008-physical-erasure-and-tombstones.md)
+boundary), [adr/0003-reconciliation-and-history.md](adr/0003-reconciliation-and-history.md)
+(reconciliation links, history, retraction) and
+[adr/0008-physical-erasure-and-tombstones.md](adr/0008-physical-erasure-and-tombstones.md)
 (erasure design, ported verbatim from the source project).
 
 ## Assets
@@ -16,7 +18,9 @@ boundary) and [adr/0008-physical-erasure-and-tombstones.md](adr/0008-physical-er
 | Per-record DEKs (256-bit data keys) | `memory_keys.wrapped_dek` rows | Wrapped by the KEK; destroyed on erasure |
 | KEK (256-bit key-encryption key) | `<data_dir>/master.key` — **a plaintext file**, created mode 0600 | OS file permissions only |
 | SQLite DB + WAL files | `<data_dir>/personal_memory.db{,-wal,-shm}` | Field-level ciphertext + host protection |
-| Derived FTS index | `memory_claim_fts_index` table inside the DB | **Plaintext** claim text — opt-in, see below |
+| Derived FTS index | `memory_claim_fts_index` table inside the DB | **Plaintext** claim text (`body`) plus a second plaintext-derived copy (`body_stem`) — opt-in, see below |
+| Reconciliation links | `memory_claim_links` rows | **Plaintext** metadata: claim ids, `relation`, `status`, `to_version`, `origin` (judge id), timestamps — no claim text |
+| Version change reasons | `memory_claim_versions.change_reason` | **Plaintext** single-token reason (`created`/`promoted`/`changed`/`retracted`) |
 | Source `external_ref` values | `memory_sources.keyed_lookup_hash` | HKDF-derived lookup key + HMAC; no plaintext refs |
 | Confirm-gate nonces | In-memory `DeleteRegistry` (TTL 600 s); under MCP also inside outbox `body` lines | One-time, bound to the exact `SessionBinding` |
 | Operator outbox | `<data_dir>/confirmations.jsonl` (MCP only) | OS file permissions (0600); intended for the operator's eyes; TTL-expired lines are pruned on each append |
@@ -150,7 +154,9 @@ secret file (0600-equivalent custody).
 
 ## Supply chain
 
-- Sole runtime dependency: `cryptography>=42`.
+- Runtime dependencies: `cryptography>=42` and
+  `snowballstemmer>=3.0.1,<4` (BSD-3-Clause; deterministic stemming for
+  the search normalization layer).
 - Optional `[mcp]` extra: `mcp>=1.28.1` (floor raised past the
   CVE-affected 1.x line; the facade adapts to both the 1.x decorator and
   2.x constructor SDK APIs).
@@ -166,15 +172,43 @@ secret file (0600-equivalent custody).
 - **No defense against the host or same-UID processes.** Whoever can read
   the process memory, the KEK file, or ptrace the process can get
   plaintext. The encryption boundary starts at the disk.
-- **The FTS index stores plaintext.** `build_claim_fts_index` materializes
-  decrypted claim text into `memory_claim_fts_index` for ranking. It is
-  opt-in and rebuildable, erasure purges its rows, and `rank_claims` works
-  without it — but if you need strictly ciphertext at rest, do not build
-  it.
+- **The FTS index stores plaintext — twice.** `build_claim_fts_index`
+  materializes decrypted claim text into `memory_claim_fts_index` for
+  ranking; in the v2 format the table holds `body` (the claim text)
+  **and** `body_stem`, a second plaintext-derived copy of the same text
+  reduced to Snowball stems. It is opt-in and rebuildable, erasure
+  purges both columns' rows, restricted claims are never indexed, and
+  `rank_claims` works without it — but if you need strictly ciphertext
+  at rest, do not build it.
 - **Metadata is plaintext.** Schema shape, audit rows (action/target-kind/
   outcome/reason — no content), lifecycle fields, timestamps, principal
-  ids, and the deletion manifest are unencrypted. These leak existence and
-  activity patterns, not contents.
+  ids, the deletion manifest, `memory_claim_versions.change_reason`, and
+  `memory_claim_links` rows (claim ids, `relation`, `status`,
+  `to_version`, `origin` — the judge id — and timestamps) are
+  unencrypted. These leak existence and activity patterns — including
+  that a replacement was proposed or resolved and by which judge — not
+  contents.
+- **A retracted memory keeps its ciphertext.** `retract_personal_memory`
+  removes a claim from every default read (query, ranking, FTS, context,
+  lists) and auto-rejects pending links that touch it, but it
+  deliberately preserves the encrypted content and its DEKs — the
+  record stays readable by id until `forget_personal_memory` physically
+  erases it. Retraction is a lifecycle state, not destruction.
+- **`explain_claim` mirrors the by-id invisibility rules.** Restricted
+  and expired claims return the byte-identical not-found denial, and its
+  `history` field carries metadata-only entries (no `content` key).
+- **Reconciliation edge cases are documented, not crash-atomic across
+  steps.** Accepted limitations: `accept_memory_reconciliation`
+  registers the `user_confirmation` source in its own transaction before
+  resolving the link, so a stale-link `ConflictError` (or a race) can
+  leave that source row orphaned; a custom judge that raises after the
+  new candidate was committed leaves the candidate stored with no links;
+  accepting a link whose new claim is already `confirmed` — or whose
+  candidate version has since expired — resolves exactly like
+  `confirm_claim` (promotion clears `expires_at`); rejecting a link
+  registers no source; and accept preserves the old memory's
+  `expires_at` on its terminal `superseded` version while
+  `retract_personal_memory` clears it on the `retracted` one.
 - **`confirmations.jsonl` (MCP) holds nonce-bearing text** — lines whose
   nonce TTL has passed are pruned on the next append, so the file is a
   transient delivery channel, not an audit log. Expired previews authorize

@@ -44,7 +44,8 @@ the owner stated or clearly consented to:
 ### Candidate vs confirmed lifecycle
 
 Claims move through a closed lifecycle (`MemoryState`): `candidate` →
-`confirmed` → `superseded` / `deleted`. Drafts come before facts:
+`confirmed` → `superseded` / `retracted` / `deleted`. Drafts come before
+facts:
 
 - `create_candidate` (the unbound `PersonalMemoryStore.create_candidate`,
   called as `create_candidate(store, actor, ...)`) always lands a draft.
@@ -59,6 +60,46 @@ Claims move through a closed lifecycle (`MemoryState`): `candidate` →
   `assemble_context`, `explain_why_remembered`, `explain_claim`.
 - The mode is per-owner: `get_memory_mode` / `set_memory_mode`
   (`auto_insight` | `confirm_required`).
+
+## When memories conflict (reconciliation)
+
+A new memory that contradicts a confirmed one is **not** auto-resolved:
+`remember_personal_insight` results and the persisted items of
+`learn_from_turn` carry a `reconciliations` list of pending
+`supersedes` links (new → old)
+proposed by a deterministic judge. The new memory stays a `candidate`
+and the old one stays `confirmed` until the **owner** decides.
+
+When a remember/learn result has a non-empty `reconciliations` list:
+
+1. Tell the owner what the proposal is — `list_memory_reconciliations`
+   returns the pending links with the new and old texts.
+2. Ask whether the new fact should replace the old one, then call
+   `accept_memory_reconciliation` (promotes the new memory, supersedes
+   the old) or `reject_memory_reconciliation` (dismisses the link; both
+   memories stay unchanged).
+3. **Never accept without the owner's explicit agreement.** A pending
+   link changes nothing about reads — leaving it pending is always
+   safe, and a rejected proposal for the same pair never comes back.
+
+An accept can fail with `ConflictError` if the old memory changed since
+the proposal — re-list the links and ask again rather than retrying
+blindly.
+
+## History and retraction
+
+- **"Where did I live before?" / "what did you remember about X?"** —
+  use `personal_memory_history` (by `claim_id`, or `query` when you do
+  not know the id). It walks the version chain plus accepted
+  replacements in both directions; `current_claim_id` is the newest
+  memory in the chain. `explain_claim` carries the same entries
+  metadata-only.
+- **"That's no longer true, but keep the record"** — prefer
+  `retract_personal_memory` over `forget_personal_memory`: the memory
+  leaves every default read but stays readable by id and in history,
+  pending links touching it are auto-rejected, and its content stays
+  encrypted. Use `forget_personal_memory` when the owner wants the
+  content **erased**, not just retired.
 
 ## When NOT to remember (privacy do's and don'ts)
 
@@ -88,8 +129,9 @@ Erase when:
   `forget_personal_memory` (by `claim_id`) or `do_not_remember` (by
   `claim_id` and/or matching content text, up to ten matched claims).
 - **A fact is stale or contradicted** and the owner wants it gone rather
-  than corrected — otherwise prefer `correct_personal_memory`, which
-  preserves the version chain.
+  than corrected — otherwise prefer `correct_personal_memory` (same-claim
+  fix, preserves the version chain) or `retract_personal_memory`
+  (retire the claim, keep its encrypted record and history).
 - **A candidate is rejected** — `reject_candidate_memory`.
 
 Erasure is **physical**: after the confirm-gate consumes the request,
@@ -181,6 +223,10 @@ Mutating owner flows — `remember_personal_insight`, `learn_from_turn`,
 `correct_personal_memory`, `forget_personal_memory`, `do_not_remember`,
 `confirm_candidate_memory`, `reject_candidate_memory` — take `store` as a
 **required** keyword argument: a write can never hit an implicit default.
+The reconciliation/history helpers (`list_memory_reconciliations`,
+`accept_memory_reconciliation`, `reject_memory_reconciliation`,
+`personal_memory_history`, `retract_personal_memory`) require `store=`
+the same way.
 Read helpers still default `store` to `None`, which opens — and creates if
 missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
 `~/.agent-personal-memory`); in embedded use always pass the constructed
@@ -254,6 +300,10 @@ never carry identity fields — extra keys are rejected.
 | `explain_why_remembered` / `explain_claim` | Provenance and lifecycle explanations (EN/RU) |
 | `correct_personal_memory` | Replace claim content with a new version |
 | `export_owner_data` / `export_personal_memory` | Full owner export (JSON bytes / localized) |
+| `list_memory_reconciliations` | List pending (or accepted/rejected) replacement links with old/new texts |
+| `accept_memory_reconciliation` / `reject_memory_reconciliation` | Owner resolution of a pending `supersedes` link |
+| `personal_memory_history` | Chronological version+link history for one claim (`claim_id` or `query`) |
+| `retract_personal_memory` | Retire a claim (terminal `retracted` state; content stays encrypted until forget) |
 | `forget_personal_memory` / `do_not_remember` | Non-authorizing deletion previews (confirm-gate) |
 | `personal_memory_confirm` | Consume a one-time nonce — the only argument is `nonce` |
 
@@ -272,7 +322,12 @@ never carry identity fields — extra keys are rejected.
 - **Explain/export**: `explain_why_remembered`, `explain_claim`,
   `export_owner_data`, `export_personal_memory`.
 - **Mutations**: `correct_personal_memory`, `forget_personal_memory`,
-  `do_not_remember`.
+  `do_not_remember`, `retract_personal_memory`.
+- **Reconciliation/history**: `list_memory_reconciliations`,
+  `accept_memory_reconciliation`, `reject_memory_reconciliation`,
+  `personal_memory_history`, `propose_reconciliation`,
+  `propose_reconciliations`, `ConflictJudge`, `SlotRuleJudge`,
+  `Relation`.
 - **Confirm-gate**: `create_delete_preview`,
   `CONFIRM_REGISTRY.open_preview`, `CONFIRM_REGISTRY.consume_confirm`,
   `consume_delete_request`, `reject_legacy_confirm`; `DeleteRegistry` and

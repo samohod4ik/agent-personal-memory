@@ -32,8 +32,14 @@ server, no network call, and no telemetry.
   encrypted blobs, drops support edges and FTS rows, compacts the database,
   and leaves only an anonymized tombstone receipt.
 - **Deterministic recall.** SQLite FTS5 (tenant scope inside the `MATCH`
-  query) plus lexical/entity/recency ranking and tenant-local BM25 — no
-  embeddings, no LLM in the loop.
+  query) plus stem-aware RU/EN lexical/entity/recency ranking and
+  tenant-local BM25 — no embeddings, no LLM in the loop.
+- **Owner-resolved conflicts.** When a new memory contradicts a confirmed
+  one, a deterministic judge proposes a `supersedes` link instead of
+  silently overwriting; only the owner's accept promotes the new memory
+  and supersedes the old. Full per-version history (`change_reason`,
+  accepted links both directions) and a `retracted` state for
+  facts that stopped being true but should stay on record.
 - **Explainability and export.** `explain_claim` / `explain_why_remembered`
   report provenance, lifecycle state, and supporting sources;
   `export_owner_data` produces a full owner export. Owner-facing text is
@@ -46,7 +52,8 @@ for the embedding guide aimed at agents.
 
 ## Install
 
-Requires Python 3.10+. The sole runtime dependency is `cryptography>=42`.
+Requires Python 3.10+. Runtime dependencies: `cryptography>=42` and
+`snowballstemmer>=3.0.1,<4` (BSD-3-Clause).
 
 ```bash
 pip install .            # from a checkout
@@ -54,6 +61,15 @@ pip install ".[mcp]"     # with the optional MCP server
 # or straight from the repository if you have access:
 pip install "git+ssh://git@github.com/samohod4ik/agent-personal-memory.git"
 ```
+
+### Upgrading from 0.1.x
+
+The v4→v5 schema migration runs automatically on first open and is
+idempotent — but a database migrated to v5 **cannot** be opened by 0.1.x
+builds. Back up `<data_dir>` before upgrading. To get stemmed FTS
+ranking, rebuild the derived index once per tenant with
+`build_claim_fts_index` — until then `rank_claims_fts` falls back to
+native ranking automatically.
 
 ## Quickstart (< 15 minutes)
 
@@ -129,6 +145,121 @@ with tempfile.TemporaryDirectory(prefix="pm-quickstart-") as data_dir:
     print(result["confirmation"])
 ```
 
+## Search normalization
+
+Recall is deterministic and bilingual. Query text and stored text are
+normalized the same way — casefold, `ё`→`е`, Snowball stemming for
+Russian and English (via the mandatory `snowballstemmer` dependency) —
+so «какая видеокарта у меня» also finds a fact stored as «видеокартой».
+A token matches when it appears as a substring (the 0.1.x behaviour)
+**or** its stem equals a stored stem, so every previous hit still
+matches; stop-word-only false positives are gone, while a query made
+entirely of stop words keeps the old behaviour. Identifiers are never
+stemmed: tokens with digits, mixed Cyrillic/Latin tokens, UUIDs, dates,
+and originally-uppercase tokens of ≤6 characters — "RTX 3060" still
+matches exactly.
+
+Known limits: different Snowball roots are not unified («созваниваться»
+does not match «созвоны» — pinned by an expected-failure test), and the
+`query_claims`-bounded surfaces keep a 500-row cap. The optional FTS
+index is v2: `memory_claim_fts_index` holds `body` plus `body_stem`
+(a stemmed plaintext copy — see the threat model) and a normalizer
+version in `memory_fts_meta`; it is kept in sync inside the write
+transaction on create/confirm/correct/accept/retract/erase, restricted
+and non-active claims are never indexed, and an old-format or
+version-mismatched index is treated as absent (native-ranking fallback)
+until `build_claim_fts_index` rebuilds it per tenant.
+
+## Reconciliation
+
+When a new memory contradicts a confirmed one, the library does not pick
+a winner — the owner does. `remember_personal_insight` results and the
+persisted items of `learn_from_turn` carry `reconciliations`: pending `supersedes`
+links (new → old) proposed by a `ConflictJudge` against up to five
+confirmed memories of the same owner. The default `SlotRuleJudge`
+(`slot_rule.v1`) is deterministic and conservative — it compares a few
+personal slots (home, name, name-style; RU and EN) and prefers false
+negatives; a host can inject any judge (e.g. an LLM) via `judge=`. A
+contradiction keeps the new memory `candidate` and the old one
+`confirmed`; `accept_memory_reconciliation` promotes the new memory and
+supersedes the old — after re-checking the old memory did not change
+since the proposal — and `reject_memory_reconciliation` dismisses it.
+
+```python
+import tempfile
+
+from agent_personal_memory import (
+    Actor,
+    PersonalMemoryStore,
+    accept_memory_reconciliation,
+    list_memory_reconciliations,
+    personal_memory_history,
+    rank_claims,
+    remember_personal_insight,
+)
+
+with tempfile.TemporaryDirectory(prefix="pm-reconcile-") as data_dir:
+    store = PersonalMemoryStore(data_dir=data_dir)
+    owner = Actor(platform="cli", user_id="owner-1", display_name="Owner")
+
+    first = remember_personal_insight(owner, "I live in Kazan", store=store)
+    assert first["state"] == "confirmed"
+    assert first["reconciliations"] == []
+
+    second = remember_personal_insight(
+        owner, "I moved to Perm, I no longer live in Kazan", store=store
+    )
+    # The deterministic judge flags a contradiction: the new memory
+    # stays a candidate and a pending supersedes link (new -> old) is
+    # proposed instead of overwriting anything.
+    assert second["state"] == "candidate"
+    link = second["reconciliations"][0]
+    assert link["relation"] == "supersedes"
+    assert link["status"] == "pending"
+
+    pending = list_memory_reconciliations(owner, store=store)
+    assert pending["count"] == 1
+
+    # Only the owner resolves it: accept promotes the new memory and
+    # supersedes the old one.
+    resolved = accept_memory_reconciliation(
+        owner, link["link_id"], store=store
+    )
+    assert resolved["status"] == "accepted"
+    assert resolved["new_state"] == "confirmed"
+    assert resolved["old_state"] == "superseded"
+
+    hits = rank_claims(owner, "where do I live", store=store)
+    assert str(hits[0]["claim_id"]) == str(second["claim_id"])
+
+    # History walks the version chain plus the accepted link.
+    history = personal_memory_history(
+        owner, claim_id=str(first["claim_id"]), store=store
+    )
+    assert history["current_claim_id"] == str(second["claim_id"])
+    assert {entry["claim_id"] for entry in history["entries"]} == {
+        str(first["claim_id"]),
+        str(second["claim_id"]),
+    }
+    print(f"current memory: {history['current_claim_id']}")
+```
+
+## History and retraction
+
+`personal_memory_history` (by `claim_id` or `query`) walks a memory's
+version chain and every accepted replacement around it — chronological
+entries with state, `change_reason` (`created` / `promoted` / `changed`
+/ `retracted`), timestamps, and content for the owner. The promotion
+step folds into the creation entry by default (`collapse_promoted`);
+`current_claim_id` points at the newest memory in the chain. Versions
+written by 0.1.x databases get a reason inferred from the audit log
+(`inferred: true`). `explain_claim` carries the same entries
+metadata-only. When a fact stops being true but the record should stay,
+`retract_personal_memory` appends a terminal `retracted` version: the
+memory leaves every default read, stays readable by id and in history,
+any pending links touching it are auto-rejected, and its content
+remains encrypted until `forget_personal_memory` erases it.
+
 ## API map
 
 All names below are importable from `agent_personal_memory` (the canonical
@@ -147,6 +278,12 @@ helpers still default `store` to `None`.
 | Review | `list_candidate_memories` | List drafts awaiting owner review |
 | | `confirm_candidate_memory` | Promote a candidate to `confirmed` via a user-confirmation source |
 | | `reject_candidate_memory` | Preview candidate erasure (confirm-gated) |
+| Reconciliation | `list_memory_reconciliations` | List replacement links (default `pending`) with owner-visible old/new texts |
+| | `accept_memory_reconciliation` | Owner-accept a pending `supersedes` link: promotes the new memory, supersedes the old (stale-checked) |
+| | `reject_memory_reconciliation` | Mark a pending link rejected; both memories stay unchanged |
+| | `propose_reconciliation` / `propose_reconciliations` | Manual link proposal / judge-driven pass; `ConflictJudge`, `SlotRuleJudge`, `Relation` form the judge seam (`judge=` kwarg) |
+| History / lifecycle | `personal_memory_history` | Chronological version+link history for one claim (`claim_id` or `query`; `collapse_promoted` default on) |
+| | `retract_personal_memory` | Terminal `retracted` state: hidden from default reads, readable by id, content stays encrypted until forget |
 | Read / rank | `list_personal_memories` | Owner-facing inventory ("what do you remember?"), localized EN/RU |
 | | `query_claims` / `query_sources` | Authorized metadata queries; closed-vocabulary filters apply before any decrypt |
 | | `get_authorized_claim` / `get_authorized_source` | Single-record reads; absent, foreign, and erased ids are identical `NotFoundError` |
@@ -230,7 +367,8 @@ landscape review; this space moves fast.
 Honest trade-offs: this package does **no** semantic/vector search and no
 LLM-driven extraction (ranking is lexical/BM25, extraction is rule-based
 EN/RU), and neither graph memory nor a managed tier. Choose it when the
-priority is a small auditable dependency surface (one runtime dependency),
+priority is a small auditable dependency surface (two runtime
+dependencies),
 ciphertext at rest, and human-confirmed deletion — not recall breadth.
 
 ## Security notes
@@ -243,7 +381,10 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
   `correct_personal_memory`, `forget_personal_memory`, `do_not_remember`,
   `confirm_candidate_memory`, `reject_candidate_memory`) take `store` as a
   required keyword argument — a write can never hit an implicit default
-  store. Read helpers still accept `store=None`, which opens — and creates
+  store. The reconciliation/history helpers
+  (`list_memory_reconciliations`, `accept_memory_reconciliation`,
+  `reject_memory_reconciliation`, `personal_memory_history`,
+  `retract_personal_memory`) require `store=` the same way. Read helpers still accept `store=None`, which opens — and creates
   if missing — the default data dir (`PERSONAL_MEMORY_DATA_DIR`, else
   `~/.agent-personal-memory`); in embedded use pass an explicit `store=`
   everywhere so a forgotten argument cannot read the host's default
@@ -252,10 +393,12 @@ ciphertext at rest, and human-confirmed deletion — not recall breadth.
   snapshots, or OS-level copies made before it (the `ErasureReceipt`
   carries an explicit backup-retention note).
 - The optional FTS index (`build_claim_fts_index`) stores plaintext claim
-  text inside the DB for ranking; skip it if you need strictly ciphertext
-  at rest — `rank_claims`/`rank_claims_fts` work without it.
-- Supply chain: sole runtime dependency `cryptography>=42`; the `mcp` SDK
-  ships only under the `mcp` extra. Tests and bench need no network.
+  text inside the DB for ranking — `body` plus a second plaintext-derived
+  `body_stem` column; skip it if you need strictly ciphertext at rest —
+  `rank_claims`/`rank_claims_fts` work without it.
+- Supply chain: runtime dependencies `cryptography>=42` and
+  `snowballstemmer>=3.0.1,<4`; the `mcp` SDK ships only under the `mcp`
+  extra. Tests and bench need no network.
 - Full details: [docs/threat-model.md](docs/threat-model.md).
 
 ## Provenance and license
