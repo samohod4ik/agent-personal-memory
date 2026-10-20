@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .lifecycle import MemoryState
+from .lifecycle import ACTIVE_READ_STATES, MemoryState
 from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
 from .types import Actor
 from .validation import (
@@ -150,7 +150,12 @@ def query_claims(
                 )
                 params: list[object] = [tenant_id, now]
                 if state_filter is None:
-                    sql += " AND v.state NOT IN ('superseded', 'deleted')"
+                    active = sorted(
+                        item.value for item in ACTIVE_READ_STATES
+                    )
+                    placeholders = ",".join("?" for _ in active)
+                    sql += f" AND v.state IN ({placeholders})"
+                    params.extend(active)
                 else:
                     placeholders = ",".join("?" for _ in state_filter)
                     sql += f" AND v.state IN ({placeholders})"

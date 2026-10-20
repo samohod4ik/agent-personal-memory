@@ -9,7 +9,10 @@ class MemoryState(str, Enum):
     CANDIDATE = "candidate"
     CONFIRMED = "confirmed"
     SUPERSEDED = "superseded"
+    RETRACTED = "retracted"
     DELETED = "deleted"
 
 
 ACTIVE_READ_STATES = frozenset({MemoryState.CANDIDATE, MemoryState.CONFIRMED})
+
+CHANGE_REASONS = frozenset({"created", "promoted", "changed", "retracted"})

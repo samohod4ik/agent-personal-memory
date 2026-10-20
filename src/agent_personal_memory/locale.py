@@ -10,10 +10,14 @@ _STATE_LABELS = {
     "en": {
         "candidate": "candidate memory",
         "confirmed": "confirmed memory",
+        "superseded": "superseded memory",
+        "retracted": "retracted memory",
     },
     "ru": {
         "candidate": "кандидат в память",
         "confirmed": "подтверждённая память",
+        "superseded": "заменённая память",
+        "retracted": "отозванная память",
     },
 }
 
@@ -80,6 +84,10 @@ _MUTATION_CONFIRM = {
     "correct": {
         "en": "Memory updated with your correction (version {version}).",
         "ru": "Память обновлена с вашим исправлением (версия {version}).",
+    },
+    "retract": {
+        "en": "Memory retracted and will no longer be used (version {version}).",
+        "ru": "Запись памяти отозвана и больше не будет использоваться (версия {version}).",
     },
     "forget_preview": {
         "en": "Preview: forget {summary}. Open /memory_delete to review the exact list.",
