@@ -189,12 +189,15 @@ def propose_reconciliations(
         old_text = _as_text(row.get("content"))
         if arbiter.judge(new_text, old_text) != Relation.CONTRADICTS:
             continue
-        link = memory.create_claim_link(
-            actor,
-            from_claim_id=claim_id,
-            to_claim_id=str(row["claim_id"]),
-            origin=arbiter.judge_id,
-        )
+        try:
+            link = memory.create_claim_link(
+                actor,
+                from_claim_id=claim_id,
+                to_claim_id=str(row["claim_id"]),
+                origin=arbiter.judge_id,
+            )
+        except (NotFoundError, ValidationError):
+            continue
         results.append(_result_item(link, claim_id, str(row["claim_id"])))
     return results
 
@@ -250,6 +253,12 @@ def accept_memory_reconciliation(
     (when still a candidate) and the old claim is superseded."""
     lang = normalize_language(language)
     link = _require_link_id(link_id)
+    pending_ids = {
+        str(item["link_id"])
+        for item in store.list_claim_links(actor, status="pending")
+    }
+    if link not in pending_ids:
+        raise NotFoundError("Claim link not found")
     confirmation = _register_actor_source(
         actor,
         source_kind="user_confirmation",
@@ -308,6 +317,8 @@ def list_memory_reconciliations(
     items: list[dict[str, object]] = []
     for link in links:
         item = dict(link)
+        item["new_claim_id"] = link["from_claim_id"]
+        item["old_claim_id"] = link["to_claim_id"]
         item["new_content"] = _visible_content(
             actor, link["from_claim_id"], store=store
         )

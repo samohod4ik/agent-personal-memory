@@ -133,7 +133,7 @@ def _persist_insight(
     reconciliations = propose_reconciliations(
         actor,
         str(created["claim_id"]),
-        judge=judge or DEFAULT_JUDGE,
+        judge=judge if judge is not None else DEFAULT_JUDGE,
         store=store,
     )
     if mode == MEMORY_MODE_AUTO_INSIGHT and not reconciliations:

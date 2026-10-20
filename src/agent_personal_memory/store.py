@@ -1925,11 +1925,21 @@ class PersonalMemoryStore:
             if pending_error is None:
                 from_row = self._lookup_claim(conn, tenant_id, from_claim_id)
                 to_row = self._lookup_claim(conn, tenant_id, to_claim_id)
+                from_newest = (
+                    self._newest_claim_version(conn, tenant_id, from_claim_id)
+                    if from_row is not None and from_row["deleted_at"] is None
+                    else None
+                )
+                to_newest = (
+                    self._newest_claim_version(conn, tenant_id, to_claim_id)
+                    if to_row is not None and to_row["deleted_at"] is None
+                    else None
+                )
                 if (
-                    from_row is None
-                    or from_row["deleted_at"] is not None
-                    or to_row is None
-                    or to_row["deleted_at"] is not None
+                    from_newest is None
+                    or to_newest is None
+                    or str(from_newest["sensitivity"]) == "restricted"
+                    or str(to_newest["sensitivity"]) == "restricted"
                 ):
                     self._append_audit(
                         conn,
@@ -1948,7 +1958,21 @@ class PersonalMemoryStore:
                 )
                 if existing is not None:
                     return self._link_result(existing)
-                newest = self._newest_claim_version(conn, tenant_id, to_claim_id)
+                if str(to_newest["state"]) != MemoryState.CONFIRMED:
+                    self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=tenant_id,
+                        action="claim.link_propose",
+                        target_kind="claim_link",
+                        target_id="",
+                        outcome="rejected",
+                        policy_reason="invalid_transition",
+                    )
+                    pending_error = ValidationError(
+                        "claim link: target claim must be confirmed"
+                    )
+            if pending_error is None:
                 link_id = str(uuid.uuid4())
                 now = utcnow_iso()
                 conn.execute(
@@ -1963,7 +1987,7 @@ class PersonalMemoryStore:
                         to_claim_id,
                         "supersedes",
                         "pending",
-                        int(newest["version"]),
+                        int(to_newest["version"]),
                         origin,
                         now,
                         None,
@@ -2135,12 +2159,14 @@ class PersonalMemoryStore:
                         old_newest is None
                         or int(old_newest["version"]) != int(link["to_version"])
                         or str(old_newest["state"]) != MemoryState.CONFIRMED
+                        or str(old_newest["sensitivity"]) == "restricted"
                         or new_newest is None
                         or str(new_newest["state"])
                         not in (
                             MemoryState.CANDIDATE.value,
                             MemoryState.CONFIRMED.value,
                         )
+                        or str(new_newest["sensitivity"]) == "restricted"
                     )
                     if stale:
                         self._append_audit(

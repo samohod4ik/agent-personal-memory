@@ -104,6 +104,22 @@ def _confirmed(
     )
 
 
+def _restricted(
+    store: PersonalMemoryStore, actor: Actor, text: str, ref: str
+) -> dict:
+    source = _source(store, actor, ref)
+    return store.create_candidate(
+        actor,
+        claim_kind="confirmed_fact",
+        content=text.encode("utf-8"),
+        confidence=0.9,
+        explanation="seed",
+        sensitivity="restricted",
+        source_ids=[str(source["source_id"])],
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+
 class ReconProposeTests(unittest.TestCase):
     """S-RECON-PROPOSE: proposals change the auto_insight write path."""
 
@@ -512,6 +528,119 @@ class StoreLinkTests(unittest.TestCase):
                 origin="x",
             )
 
+    def test_link_not_found_text_identical_for_missing_and_foreign(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        b_claim = _confirmed(self.store, TENANT_B, "я живу в Перми", "b-perm")
+        messages: list[str] = []
+        for to_id in (str(uuid.uuid4()), str(b_claim["claim_id"])):
+            with self.assertRaises(NotFoundError) as ctx:
+                self.store.create_claim_link(
+                    TENANT_A,
+                    from_claim_id=str(old["claim_id"]),
+                    to_claim_id=to_id,
+                    origin="x",
+                )
+            messages.append(str(ctx.exception))
+        self.assertEqual(len(set(messages)), 1)
+        self.assertEqual(messages[0], "Claim not found")
+
+    def test_create_link_requires_confirmed_target(self) -> None:
+        target = _candidate(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        with self.assertRaises(ValidationError) as ctx:
+            self.store.create_claim_link(
+                TENANT_A,
+                from_claim_id=str(new["claim_id"]),
+                to_claim_id=str(target["claim_id"]),
+                origin="manual",
+            )
+        self.assertEqual(
+            str(ctx.exception), "claim link: target claim must be confirmed"
+        )
+        conn = self.store._connect()
+        try:
+            audit = conn.execute(
+                "SELECT outcome, policy_reason FROM memory_audit "
+                "WHERE action = 'claim.link_propose'"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(audit["outcome"], "rejected")
+        self.assertEqual(audit["policy_reason"], "invalid_transition")
+        self.assertEqual(self.store.list_claim_links(TENANT_A, status=None), [])
+
+    def test_repeat_returns_existing_link_after_target_superseded(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        third = _candidate(self.store, TENANT_A, "я живу в Уфе", "a-ufa")
+        link = self.store.create_claim_link(
+            TENANT_A,
+            from_claim_id=str(new["claim_id"]),
+            to_claim_id=str(old["claim_id"]),
+            origin="manual",
+        )
+        other = self.store.create_claim_link(
+            TENANT_A,
+            from_claim_id=str(third["claim_id"]),
+            to_claim_id=str(old["claim_id"]),
+            origin="manual",
+        )
+        accept_memory_reconciliation(
+            TENANT_A, other["link_id"], store=self.store
+        )
+        again = self.store.create_claim_link(
+            TENANT_A,
+            from_claim_id=str(new["claim_id"]),
+            to_claim_id=str(old["claim_id"]),
+            origin="other",
+        )
+        self.assertEqual(again["link_id"], link["link_id"])
+        self.assertEqual(again["status"], "pending")
+
+    def test_restricted_claims_are_invisible_to_create_link(self) -> None:
+        normal = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        restricted = _restricted(self.store, TENANT_A, "код 4321", "a-secret")
+        normal_id = str(normal["claim_id"])
+        restricted_id = str(restricted["claim_id"])
+        messages: list[str] = []
+        for from_id, to_id in (
+            (normal_id, restricted_id),
+            (restricted_id, normal_id),
+            (normal_id, str(uuid.uuid4())),
+        ):
+            with self.assertRaises(NotFoundError) as ctx:
+                self.store.create_claim_link(
+                    TENANT_A,
+                    from_claim_id=from_id,
+                    to_claim_id=to_id,
+                    origin="x",
+                )
+            messages.append(str(ctx.exception))
+        self.assertEqual(messages, ["Claim not found"] * 3)
+
+    def test_tenant_trigger_aborts_cross_tenant_update(self) -> None:
+        a_claim = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        b_claim = _confirmed(self.store, TENANT_B, "я живу в Перми", "b-perm")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        link = self.store.create_claim_link(
+            TENANT_A,
+            from_claim_id=str(new["claim_id"]),
+            to_claim_id=str(a_claim["claim_id"]),
+            origin="hand",
+        )
+        with self.assertRaises(sqlite3.IntegrityError) as exc:
+            with self.store._tx() as conn:
+                conn.execute(
+                    "UPDATE memory_claim_links SET from_claim_id = ? "
+                    "WHERE id = ?",
+                    (str(b_claim["claim_id"]), link["link_id"]),
+                )
+        self.assertIn("tenant mismatch", str(exc.exception))
+        self.assertEqual(
+            self.store.list_claim_links(TENANT_A)[0]["from_claim_id"],
+            str(new["claim_id"]),
+        )
+
     def test_manual_propose_shape(self) -> None:
         old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
         new = _candidate(self.store, TENANT_A, PERM, "a-perm")
@@ -598,6 +727,80 @@ class ProposeBudgetTests(unittest.TestCase):
         self.assertEqual(second[0]["status"], "pending")
         self.assertEqual(
             len(self.store.list_claim_links(TENANT_A, status=None)), 1
+        )
+
+
+class _EraseInsideJudge:
+    judge_id = "stub.erase_inside"
+
+    def __init__(
+        self, store: PersonalMemoryStore, actor: Actor, target_id: str
+    ) -> None:
+        self.store = store
+        self.actor = actor
+        self.target_id = target_id
+
+    def judge(self, new_text: str, old_text: str) -> Relation:
+        self.store.erase_claim(self.actor, self.target_id)
+        return Relation.CONTRADICTS
+
+
+class _FlipStateInsideJudge:
+    judge_id = "stub.flip_state"
+
+    def __init__(self, store: PersonalMemoryStore, target_id: str) -> None:
+        self.store = store
+        self.target_id = target_id
+
+    def judge(self, new_text: str, old_text: str) -> Relation:
+        conn = self.store._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_claim_versions SET state = 'superseded' "
+                "WHERE claim_id = ?",
+                (self.target_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return Relation.CONTRADICTS
+
+
+class ProposeRaceTests(unittest.TestCase):
+    """PH-2 r1 F3: a candidate vanishing or changing state between the
+    scan and create_claim_link skips it instead of aborting the call."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-race-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_erased_candidate_mid_scan_is_skipped(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        stub = _EraseInsideJudge(
+            self.store, TENANT_A, str(old["claim_id"])
+        )
+        results = propose_reconciliations(
+            TENANT_A, str(new["claim_id"]), judge=stub, store=self.store
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(
+            self.store.list_claim_links(TENANT_A, status=None), []
+        )
+
+    def test_state_changed_candidate_mid_scan_is_skipped(self) -> None:
+        old = _confirmed(self.store, TENANT_A, KAZAN, "a-kazan")
+        new = _candidate(self.store, TENANT_A, PERM, "a-perm")
+        stub = _FlipStateInsideJudge(self.store, str(old["claim_id"]))
+        results = propose_reconciliations(
+            TENANT_A, str(new["claim_id"]), judge=stub, store=self.store
+        )
+        self.assertEqual(results, [])
+        self.assertEqual(
+            self.store.list_claim_links(TENANT_A, status=None), []
         )
 
 
@@ -815,6 +1018,70 @@ class ReconResolveTests(unittest.TestCase):
         self.assertEqual(len(set(messages)), 1)
         self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
 
+    def test_accept_preflight_registers_nothing_for_unknown_link(self) -> None:
+        _k1, _k2, link = self._linked_pair()
+        a_tenant = self.store.ensure_principal(TENANT_A)
+        b_tenant = self.store.ensure_principal(TENANT_B)
+
+        def counts() -> tuple[int, int, int]:
+            conn = self.store._connect()
+            try:
+                a_sources = conn.execute(
+                    "SELECT COUNT(*) FROM memory_sources WHERE tenant_id = ?",
+                    (a_tenant,),
+                ).fetchone()[0]
+                b_sources = conn.execute(
+                    "SELECT COUNT(*) FROM memory_sources WHERE tenant_id = ?",
+                    (b_tenant,),
+                ).fetchone()[0]
+                audits = conn.execute(
+                    "SELECT COUNT(*) FROM memory_audit "
+                    "WHERE action = 'source.register'"
+                ).fetchone()[0]
+                return int(a_sources), int(b_sources), int(audits)
+            finally:
+                conn.close()
+
+        before = counts()
+        with self.assertRaises(NotFoundError) as missing_ctx:
+            accept_memory_reconciliation(
+                TENANT_A, str(uuid.uuid4()), store=self.store
+            )
+        self.assertEqual(str(missing_ctx.exception), "Claim link not found")
+        with self.assertRaises(NotFoundError) as foreign_ctx:
+            accept_memory_reconciliation(
+                TENANT_B, str(link["link_id"]), store=self.store
+            )
+        self.assertEqual(
+            str(foreign_ctx.exception), str(missing_ctx.exception)
+        )
+        self.assertEqual(counts(), before)
+        self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
+
+    def test_accept_with_restricted_new_claim_raises_conflict(self) -> None:
+        k1, k2, link = self._linked_pair()
+        source = _source(self.store, TENANT_A, "restrict-fix")
+        self.store.correct_claim(
+            TENANT_A,
+            str(k2["claim_id"]),
+            content="чувствительный факт".encode("utf-8"),
+            explanation="restrict",
+            source_ids=[str(source["source_id"])],
+            sensitivity="restricted",
+        )
+        k1_count = len(self._version_rows(k1["claim_id"]))
+        k2_count = len(self._version_rows(k2["claim_id"]))
+        with self.assertRaises(ConflictError):
+            accept_memory_reconciliation(
+                TENANT_A, link["link_id"], store=self.store
+            )
+        self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
+        self.assertEqual(len(self._version_rows(k1["claim_id"])), k1_count)
+        self.assertEqual(len(self._version_rows(k2["claim_id"])), k2_count)
+        self.assertEqual(
+            self._version_rows(k1["claim_id"])[-1]["state"], "confirmed"
+        )
+
     def test_list_memory_reconciliations_shows_contents(self) -> None:
         k1, k2, link = self._linked_pair()
         listing = list_memory_reconciliations(TENANT_A, store=self.store)
@@ -823,6 +1090,8 @@ class ReconResolveTests(unittest.TestCase):
         self.assertEqual(item["link_id"], link["link_id"])
         self.assertEqual(item["from_claim_id"], k2["claim_id"])
         self.assertEqual(item["to_claim_id"], k1["claim_id"])
+        self.assertEqual(item["new_claim_id"], k2["claim_id"])
+        self.assertEqual(item["old_claim_id"], k1["claim_id"])
         self.assertEqual(_as_text(item["new_content"]), PERM_NEG)
         self.assertEqual(_as_text(item["old_content"]), KAZAN)
         empty = list_memory_reconciliations(

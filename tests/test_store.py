@@ -120,6 +120,54 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_reopen_v5_database_is_a_noop(self) -> None:
+        first = PersonalMemoryStore(data_dir=self.data_dir)
+        conn = first._connect()
+        try:
+            objects_before = [
+                tuple(row)
+                for row in conn.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "ORDER BY type, name"
+                )
+            ]
+            columns_before = {
+                name: [
+                    tuple(row)
+                    for row in conn.execute(f"PRAGMA table_info({name})")
+                ]
+                for name in REQUIRED_TABLES
+            }
+        finally:
+            conn.close()
+        second = PersonalMemoryStore(data_dir=self.data_dir)
+        conn = second._connect()
+        try:
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in conn.execute(
+                        "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                        "ORDER BY type, name"
+                    )
+                ],
+                objects_before,
+            )
+            for name in REQUIRED_TABLES:
+                self.assertEqual(
+                    [
+                        tuple(row)
+                        for row in conn.execute(f"PRAGMA table_info({name})")
+                    ],
+                    columns_before[name],
+                )
+            version = conn.execute(
+                "SELECT version FROM memory_schema"
+            ).fetchone()[0]
+            self.assertEqual(int(version), 5)
+        finally:
+            conn.close()
+
     def test_unknown_future_schema_version_is_rejected(self) -> None:
         PersonalMemoryStore(data_dir=self.data_dir)
         probe = sqlite3.connect(str(self.data_dir / "personal_memory.db"))
