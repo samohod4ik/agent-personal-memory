@@ -131,7 +131,7 @@ from .ux import (
 )
 from .validation import ValidationError
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Unbound store method re-exported under its source name (see docstring).
 create_candidate = PersonalMemoryStore.create_candidate

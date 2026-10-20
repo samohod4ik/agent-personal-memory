@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-personal-memory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first encrypted personal memory for AI agents (privacy-focused, owner-controlled)"
 readme = "README.md"
 requires-python = ">=3.10"
