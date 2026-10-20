@@ -15,10 +15,13 @@ from enum import Enum
 from typing import Protocol
 
 from .lifecycle import MemoryState
-from .query import query_claims
+from .locale import format_mutation_confirmation, normalize_language
+from .mutations import _register_actor_source
+from .query import get_authorized_claim, query_claims
 from .store import NotFoundError, PersonalMemoryStore
 from .text_norm import tokenize
 from .types import Actor
+from .validation import ValidationError
 
 
 class Relation(str, Enum):
@@ -147,14 +150,12 @@ def propose_reconciliations(
     (new -> old). Only the judge verdict creates links."""
     memory = store
     arbiter: ConflictJudge = judge if judge is not None else DEFAULT_JUDGE
+    new_row = get_authorized_claim(
+        actor, claim_id, include_content=True, store=memory
+    )
     rows = query_claims(
         actor, include_content=True, limit=500, store=memory
     )
-    new_row = next(
-        (row for row in rows if str(row["claim_id"]) == claim_id), None
-    )
-    if new_row is None:
-        raise NotFoundError("Claim not found")
     new_text = _as_text(new_row.get("content"))
     new_slot = slot_of(new_text)
     new_stems = _content_stems(new_text)
@@ -214,3 +215,104 @@ def propose_reconciliation(
         origin=origin,
     )
     return _result_item(link, new_claim_id, old_claim_id)
+
+
+def _require_link_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValidationError("link_id: must be a non-empty string")
+    return value
+
+
+def _resolve_result(
+    resolved: dict[str, object], *, language: str, kind: str
+) -> dict[str, object]:
+    link = resolved["link"]
+    return {
+        "language": language,
+        "link_id": link["link_id"],
+        "status": link["status"],
+        "new_claim_id": resolved["new_claim_id"],
+        "old_claim_id": resolved["old_claim_id"],
+        "new_state": resolved["new_state"],
+        "old_state": resolved["old_state"],
+        "confirmation": format_mutation_confirmation(kind, language=language),
+    }
+
+
+def accept_memory_reconciliation(
+    actor: Actor,
+    link_id: object,
+    *,
+    language: object = "en",
+    store: PersonalMemoryStore,
+) -> dict[str, object]:
+    """Owner accepts a pending replacement: the new claim is confirmed
+    (when still a candidate) and the old claim is superseded."""
+    lang = normalize_language(language)
+    link = _require_link_id(link_id)
+    confirmation = _register_actor_source(
+        actor,
+        source_kind="user_confirmation",
+        label="reconcile_accept",
+        payload=link.encode("utf-8"),
+        store=store,
+    )
+    resolved = store.resolve_claim_link(
+        actor,
+        link,
+        accept=True,
+        confirmation_source_id=str(confirmation["source_id"]),
+    )
+    return _resolve_result(resolved, language=lang, kind="reconcile_accept")
+
+
+def reject_memory_reconciliation(
+    actor: Actor,
+    link_id: object,
+    *,
+    language: object = "en",
+    store: PersonalMemoryStore,
+) -> dict[str, object]:
+    """Owner declines a pending replacement; both claims stay as they are."""
+    lang = normalize_language(language)
+    link = _require_link_id(link_id)
+    resolved = store.resolve_claim_link(
+        actor, link, accept=False, confirmation_source_id=None
+    )
+    return _resolve_result(resolved, language=lang, kind="reconcile_reject")
+
+
+def _visible_content(
+    actor: Actor, claim_id: object, *, store: PersonalMemoryStore
+) -> object:
+    try:
+        row = get_authorized_claim(
+            actor, str(claim_id), include_content=True, store=store
+        )
+    except NotFoundError:
+        return None
+    return row.get("content")
+
+
+def list_memory_reconciliations(
+    actor: Actor,
+    *,
+    status: object = "pending",
+    language: object = "en",
+    store: PersonalMemoryStore,
+) -> dict[str, object]:
+    """List reconciliation links with owner-readable claim contents;
+    invisible (restricted/expired/deleted) claims report content None."""
+    lang = normalize_language(language)
+    links = store.list_claim_links(actor, status=status)
+    items: list[dict[str, object]] = []
+    for link in links:
+        item = dict(link)
+        item["new_content"] = _visible_content(
+            actor, link["from_claim_id"], store=store
+        )
+        item["old_content"] = _visible_content(
+            actor, link["to_claim_id"], store=store
+        )
+        items.append(item)
+    return {"language": lang, "count": len(items), "items": items}

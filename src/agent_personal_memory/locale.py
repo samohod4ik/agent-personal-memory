@@ -105,6 +105,14 @@ _MUTATION_CONFIRM = {
         "en": "Candidate memory confirmed and saved.",
         "ru": "Кандидат в память подтверждён и сохранён.",
     },
+    "reconcile_accept": {
+        "en": "Done: the new fact replaced the old one; the old one is kept in history.",
+        "ru": "Готово: новый факт заменил прежний, прежний сохранён в истории.",
+    },
+    "reconcile_reject": {
+        "en": "Okay, I kept the previous fact.",
+        "ru": "Хорошо, оставил прежний факт.",
+    },
     "reject_candidate_preview": {
         "en": "Preview: reject {summary}. Open /memory_delete to review the exact list.",
         "ru": "Предпросмотр: отклонить {summary}. Откройте /memory_delete для точного списка.",

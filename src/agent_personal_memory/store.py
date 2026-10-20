@@ -1259,6 +1259,7 @@ class PersonalMemoryStore:
         expires_at: str | None,
         supersedes_id: str | None,
         now: str,
+        change_reason: str | None = None,
     ) -> str:
         version_id = str(uuid.uuid4())
         wrapped, content_enc, explanation_enc = self._encrypt_claim_fields(
@@ -1272,8 +1273,8 @@ class PersonalMemoryStore:
             "INSERT INTO memory_claim_versions("
             "id, claim_id, tenant_id, version, state, sensitivity, content_enc, "
             "confidence, explanation_enc, valid_from, valid_to, expires_at, "
-            "supersedes_id, created_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "supersedes_id, created_at, change_reason"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 version_id,
                 claim_id,
@@ -1289,6 +1290,7 @@ class PersonalMemoryStore:
                 expires_at,
                 supersedes_id,
                 now,
+                change_reason,
             ),
         )
         self._put_record_dek(
@@ -1578,75 +1580,98 @@ class PersonalMemoryStore:
                     )
                     pending_error = exc
                 if pending_error is None:
-                    content, explanation = self._decrypt_claim_fields(
+                    return self._confirm_claim_on(
                         conn,
-                        tenant_id=tenant_id,
-                        claim_id=str(claim_row["id"]),
-                        version_row=newest,
-                    )
-                    now = utcnow_iso()
-                    next_version = int(newest["version"]) + 1
-                    previous_id = str(newest["id"])
-                    conn.execute(
-                        "UPDATE memory_claim_versions SET state = ? "
-                        "WHERE id = ? AND tenant_id = ?",
-                        (MemoryState.SUPERSEDED.value, previous_id, tenant_id),
-                    )
-                    version_id = self._insert_claim_version(
-                        conn,
-                        tenant_id=tenant_id,
-                        claim_id=str(claim_row["id"]),
-                        version=next_version,
-                        state=MemoryState.CONFIRMED,
-                        sensitivity=str(newest["sensitivity"]),
-                        content=content,
-                        confidence=float(newest["confidence"]),
-                        explanation=explanation,
-                        valid_from=newest["valid_from"],
-                        valid_to=newest["valid_to"],
-                        expires_at=None,
-                        supersedes_id=previous_id,
-                        now=now,
-                    )
-                    self._insert_support(
-                        conn,
-                        tenant_id=tenant_id,
-                        claim_id=str(claim_row["id"]),
-                        source_ids=support_ids,
-                        now=now,
-                    )
-                    self._append_audit(
-                        conn,
-                        tenant_id=tenant_id,
-                        actor_id=tenant_id,
-                        action="claim.confirm",
-                        target_kind="claim_version",
-                        target_id=version_id,
-                        outcome="confirmed",
-                        policy_reason="",
-                    )
-                    self._sync_claim_fts_on(
-                        conn,
-                        tenant_id=tenant_id,
-                        claim_id=str(claim_row["id"]),
-                        state=MemoryState.CONFIRMED,
-                        sensitivity=str(newest["sensitivity"]),
-                        content=content,
-                        explanation=explanation,
-                    )
-                    return self._claim_result(
-                        claim_id=str(claim_row["id"]),
-                        claim_version_id=version_id,
-                        version=next_version,
-                        claim_kind=str(claim_row["claim_kind"]),
-                        state=MemoryState.CONFIRMED,
-                        sensitivity=str(newest["sensitivity"]),
-                        confidence=float(newest["confidence"]),
-                        expires_at=None,
-                        created_at=now,
-                        supersedes_id=previous_id,
+                        tenant_id,
+                        claim_row=claim_row,
+                        newest=newest,
+                        support_ids=support_ids,
                     )
         raise pending_error
+
+    def _confirm_claim_on(
+        self,
+        conn: sqlite3.Connection,
+        tenant_id: str,
+        *,
+        claim_row: sqlite3.Row,
+        newest: sqlite3.Row,
+        support_ids: list[str],
+        change_reason: str | None = None,
+    ) -> dict[str, object]:
+        """Confirm a candidate claim inside an open transaction.
+
+        Shared by ``confirm_claim`` and ``resolve_claim_link``; the caller
+        performs the state/visibility checks and source resolution."""
+        content, explanation = self._decrypt_claim_fields(
+            conn,
+            tenant_id=tenant_id,
+            claim_id=str(claim_row["id"]),
+            version_row=newest,
+        )
+        now = utcnow_iso()
+        next_version = int(newest["version"]) + 1
+        previous_id = str(newest["id"])
+        conn.execute(
+            "UPDATE memory_claim_versions SET state = ? "
+            "WHERE id = ? AND tenant_id = ?",
+            (MemoryState.SUPERSEDED.value, previous_id, tenant_id),
+        )
+        version_id = self._insert_claim_version(
+            conn,
+            tenant_id=tenant_id,
+            claim_id=str(claim_row["id"]),
+            version=next_version,
+            state=MemoryState.CONFIRMED,
+            sensitivity=str(newest["sensitivity"]),
+            content=content,
+            confidence=float(newest["confidence"]),
+            explanation=explanation,
+            valid_from=newest["valid_from"],
+            valid_to=newest["valid_to"],
+            expires_at=None,
+            supersedes_id=previous_id,
+            now=now,
+            change_reason=change_reason,
+        )
+        self._insert_support(
+            conn,
+            tenant_id=tenant_id,
+            claim_id=str(claim_row["id"]),
+            source_ids=support_ids,
+            now=now,
+        )
+        self._append_audit(
+            conn,
+            tenant_id=tenant_id,
+            actor_id=tenant_id,
+            action="claim.confirm",
+            target_kind="claim_version",
+            target_id=version_id,
+            outcome="confirmed",
+            policy_reason="",
+        )
+        self._sync_claim_fts_on(
+            conn,
+            tenant_id=tenant_id,
+            claim_id=str(claim_row["id"]),
+            state=MemoryState.CONFIRMED,
+            sensitivity=str(newest["sensitivity"]),
+            content=content,
+            explanation=explanation,
+        )
+        return self._claim_result(
+            claim_id=str(claim_row["id"]),
+            claim_version_id=version_id,
+            version=next_version,
+            claim_kind=str(claim_row["claim_kind"]),
+            state=MemoryState.CONFIRMED,
+            sensitivity=str(newest["sensitivity"]),
+            confidence=float(newest["confidence"]),
+            expires_at=None,
+            created_at=now,
+            supersedes_id=previous_id,
+        )
 
     def correct_claim(
         self,
@@ -1986,6 +2011,251 @@ class PersonalMemoryStore:
             sql += " ORDER BY created_at DESC, rowid DESC"
             rows = conn.execute(sql, params).fetchall()
             return [self._link_result(row) for row in rows]
+
+    def _newest_state_on(
+        self, conn: sqlite3.Connection, tenant_id: str, claim_id: str
+    ) -> str | None:
+        claim_row = self._lookup_claim(conn, tenant_id, claim_id)
+        if claim_row is None or claim_row["deleted_at"] is not None:
+            return None
+        newest = self._newest_claim_version(conn, tenant_id, str(claim_row["id"]))
+        return str(newest["state"]) if newest is not None else None
+
+    def resolve_claim_link(
+        self,
+        actor: Actor,
+        link_id: str,
+        *,
+        accept: bool,
+        confirmation_source_id: str | None = None,
+    ) -> dict[str, object]:
+        """Resolve one pending supersedes link in a single transaction."""
+        pending_error: Exception | None = None
+        with self._tx() as conn:
+            tenant_id = self._ensure_principal_on(conn, actor)
+            action = "claim.link_accept" if accept else "claim.link_reject"
+            link = None
+            if isinstance(link_id, str) and link_id:
+                link = conn.execute(
+                    "SELECT id, tenant_id, from_claim_id, to_claim_id, relation, "
+                    "status, to_version, origin, created_at, resolved_at "
+                    "FROM memory_claim_links WHERE tenant_id = ? AND id = ?",
+                    (tenant_id, link_id),
+                ).fetchone()
+            if link is None or str(link["status"]) != "pending":
+                self._append_audit(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=tenant_id,
+                    action=action,
+                    target_kind="claim_link",
+                    target_id="",
+                    outcome="denied",
+                    policy_reason="not_found",
+                )
+                pending_error = NotFoundError("Claim link not found")
+            elif not accept:
+                now = utcnow_iso()
+                conn.execute(
+                    "UPDATE memory_claim_links SET status = 'rejected', "
+                    "resolved_at = ? WHERE id = ? AND tenant_id = ?",
+                    (now, str(link["id"]), tenant_id),
+                )
+                self._append_audit(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=tenant_id,
+                    action="claim.link_reject",
+                    target_kind="claim_link",
+                    target_id=str(link["id"]),
+                    outcome="declined",
+                    policy_reason="",
+                )
+                resolved = conn.execute(
+                    "SELECT id, tenant_id, from_claim_id, to_claim_id, relation, "
+                    "status, to_version, origin, created_at, resolved_at "
+                    "FROM memory_claim_links WHERE tenant_id = ? AND id = ?",
+                    (tenant_id, str(link["id"])),
+                ).fetchone()
+                return {
+                    "link": self._link_result(resolved),
+                    "new_claim_id": str(link["from_claim_id"]),
+                    "old_claim_id": str(link["to_claim_id"]),
+                    "new_state": self._newest_state_on(
+                        conn, tenant_id, str(link["from_claim_id"])
+                    ),
+                    "old_state": self._newest_state_on(
+                        conn, tenant_id, str(link["to_claim_id"])
+                    ),
+                }
+            else:
+                try:
+                    support_ids = self._resolve_confirmation_sources(
+                        conn,
+                        tenant_id,
+                        confirmation_source_id=confirmation_source_id,
+                        reliable_source_id=None,
+                        memory_mode=self._memory_mode_on(conn, tenant_id),
+                    )
+                except ValidationError as exc:
+                    reason = (
+                        "confirmation_required"
+                        if "required" in str(exc)
+                        else "validation_failed"
+                    )
+                    self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=tenant_id,
+                        action="claim.link_accept",
+                        target_kind="claim_link",
+                        target_id=str(link["id"]),
+                        outcome="rejected",
+                        policy_reason=reason,
+                    )
+                    pending_error = exc
+                if pending_error is None:
+                    new_id = str(link["from_claim_id"])
+                    old_id = str(link["to_claim_id"])
+                    new_claim = self._lookup_claim(conn, tenant_id, new_id)
+                    old_claim = self._lookup_claim(conn, tenant_id, old_id)
+                    new_newest = (
+                        self._newest_claim_version(conn, tenant_id, new_id)
+                        if new_claim is not None
+                        and new_claim["deleted_at"] is None
+                        else None
+                    )
+                    old_newest = (
+                        self._newest_claim_version(conn, tenant_id, old_id)
+                        if old_claim is not None
+                        and old_claim["deleted_at"] is None
+                        else None
+                    )
+                    stale = (
+                        old_newest is None
+                        or int(old_newest["version"]) != int(link["to_version"])
+                        or str(old_newest["state"]) != MemoryState.CONFIRMED
+                        or new_newest is None
+                        or str(new_newest["state"])
+                        not in (
+                            MemoryState.CANDIDATE.value,
+                            MemoryState.CONFIRMED.value,
+                        )
+                    )
+                    if stale:
+                        self._append_audit(
+                            conn,
+                            tenant_id=tenant_id,
+                            actor_id=tenant_id,
+                            action="claim.link_accept",
+                            target_kind="claim_link",
+                            target_id=str(link["id"]),
+                            outcome="rejected",
+                            policy_reason="invalid_transition",
+                        )
+                        pending_error = ConflictError("Claim link is stale")
+                if pending_error is None:
+                    now = utcnow_iso()
+                    new_state = MemoryState.CONFIRMED.value
+                    if str(new_newest["state"]) == MemoryState.CANDIDATE:
+                        self._confirm_claim_on(
+                            conn,
+                            tenant_id,
+                            claim_row=new_claim,
+                            newest=new_newest,
+                            support_ids=support_ids,
+                            change_reason="promoted",
+                        )
+                    old_content, old_explanation = self._decrypt_claim_fields(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=old_id,
+                        version_row=old_newest,
+                    )
+                    previous_id = str(old_newest["id"])
+                    conn.execute(
+                        "UPDATE memory_claim_versions SET state = ? "
+                        "WHERE id = ? AND tenant_id = ?",
+                        (MemoryState.SUPERSEDED.value, previous_id, tenant_id),
+                    )
+                    self._insert_claim_version(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=old_id,
+                        version=int(old_newest["version"]) + 1,
+                        state=MemoryState.SUPERSEDED,
+                        sensitivity=str(old_newest["sensitivity"]),
+                        content=old_content,
+                        confidence=float(old_newest["confidence"]),
+                        explanation=old_explanation,
+                        valid_from=old_newest["valid_from"],
+                        valid_to=old_newest["valid_to"],
+                        expires_at=old_newest["expires_at"],
+                        supersedes_id=previous_id,
+                        now=now,
+                        change_reason="changed",
+                    )
+                    self._insert_support(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=old_id,
+                        source_ids=support_ids,
+                        now=now,
+                    )
+                    conn.execute(
+                        "UPDATE memory_claim_links SET status = 'accepted', "
+                        "resolved_at = ? WHERE id = ? AND tenant_id = ?",
+                        (now, str(link["id"]), tenant_id),
+                    )
+                    self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=tenant_id,
+                        action="claim.link_accept",
+                        target_kind="claim_link",
+                        target_id=str(link["id"]),
+                        outcome="accepted",
+                        policy_reason="",
+                    )
+                    if str(new_newest["state"]) == MemoryState.CONFIRMED:
+                        new_content, new_explanation = self._decrypt_claim_fields(
+                            conn,
+                            tenant_id=tenant_id,
+                            claim_id=new_id,
+                            version_row=new_newest,
+                        )
+                        self._sync_claim_fts_on(
+                            conn,
+                            tenant_id=tenant_id,
+                            claim_id=new_id,
+                            state=MemoryState.CONFIRMED,
+                            sensitivity=str(new_newest["sensitivity"]),
+                            content=new_content,
+                            explanation=new_explanation,
+                        )
+                    self._sync_claim_fts_on(
+                        conn,
+                        tenant_id=tenant_id,
+                        claim_id=old_id,
+                        state=MemoryState.SUPERSEDED,
+                        sensitivity=str(old_newest["sensitivity"]),
+                        content=old_content,
+                        explanation=old_explanation,
+                    )
+                    resolved = conn.execute(
+                        "SELECT id, tenant_id, from_claim_id, to_claim_id, relation, "
+                        "status, to_version, origin, created_at, resolved_at "
+                        "FROM memory_claim_links WHERE tenant_id = ? AND id = ?",
+                        (tenant_id, str(link["id"])),
+                    ).fetchone()
+                    return {
+                        "link": self._link_result(resolved),
+                        "new_claim_id": new_id,
+                        "old_claim_id": old_id,
+                        "new_state": new_state,
+                        "old_state": MemoryState.SUPERSEDED.value,
+                    }
+        raise pending_error
 
     def _try_decrypt_source_version(
         self,
@@ -2428,6 +2698,11 @@ class PersonalMemoryStore:
         conn.execute(
             "DELETE FROM memory_support WHERE tenant_id = ? AND claim_id = ?",
             (tenant_id, claim_id),
+        )
+        conn.execute(
+            "DELETE FROM memory_claim_links WHERE tenant_id = ? "
+            "AND (from_claim_id = ? OR to_claim_id = ?)",
+            (tenant_id, claim_id, claim_id),
         )
         conn.execute(
             "UPDATE memory_claims SET deleted_at = ? WHERE id = ? AND tenant_id = ?",

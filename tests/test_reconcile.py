@@ -1,24 +1,37 @@
-"""Issue #2: slot-rule reconciliation proposals (T3-RECON-PROPOSE)."""
+"""Issue #2: slot-rule reconciliation proposals and resolution (T3+T4)."""
 
 from __future__ import annotations
 
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
+from agent_personal_memory.fts_index import (
+    build_claim_fts_index,
+    rank_claims_fts,
+)
 from agent_personal_memory.learn import learn_from_turn, remember_personal_insight
-from agent_personal_memory.query import query_claims
+from agent_personal_memory.mutations import correct_personal_memory
+from agent_personal_memory.query import get_authorized_claim, query_claims
 from agent_personal_memory.ranking import rank_claims
 from agent_personal_memory.reconcile import (
     DEFAULT_JUDGE,
     Relation,
     SlotRuleJudge,
+    accept_memory_reconciliation,
+    list_memory_reconciliations,
     propose_reconciliation,
     propose_reconciliations,
+    reject_memory_reconciliation,
 )
 from agent_personal_memory.review import confirm_candidate_memory
-from agent_personal_memory.store import NotFoundError, PersonalMemoryStore
+from agent_personal_memory.store import (
+    ConflictError,
+    NotFoundError,
+    PersonalMemoryStore,
+)
 from agent_personal_memory.text_norm import stem_text
 from agent_personal_memory.types import Actor
 from agent_personal_memory.validation import (
@@ -625,6 +638,238 @@ class ReconJudgeIntegrationTests(unittest.TestCase):
         self.assertEqual(k2["state"], "confirmed")
         self.assertEqual(k2["reconciliations"], [])
         self.assertEqual(self.store.list_claim_links(TENANT_A, status=None), [])
+
+
+class ReconResolveTests(unittest.TestCase):
+    """S-RECON-RESOLVE: owner accept/reject of pending replacement links."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="pm-resolve-")
+        self.store = PersonalMemoryStore(data_dir=Path(self.tmp.name))
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _linked_pair(self) -> tuple[dict, dict, dict]:
+        k1 = remember_personal_insight(TENANT_A, KAZAN, store=self.store)
+        k2 = remember_personal_insight(TENANT_A, PERM_NEG, store=self.store)
+        links = k2["reconciliations"]
+        self.assertEqual(len(links), 1)
+        return k1, k2, links[0]
+
+    def _version_rows(self, claim_id: object) -> list[sqlite3.Row]:
+        conn = self.store._connect()
+        try:
+            return list(
+                conn.execute(
+                    "SELECT version, state, change_reason, supersedes_id "
+                    "FROM memory_claim_versions "
+                    "WHERE claim_id = ? ORDER BY version",
+                    (str(claim_id),),
+                )
+            )
+        finally:
+            conn.close()
+
+    def _link_row(self, link_id: object) -> sqlite3.Row:
+        conn = self.store._connect()
+        try:
+            return conn.execute(
+                "SELECT status, resolved_at FROM memory_claim_links WHERE id = ?",
+                (str(link_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def test_accept_promotes_new_and_supersedes_old(self) -> None:
+        k1, k2, link = self._linked_pair()
+        result = accept_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["link_id"], link["link_id"])
+        self.assertEqual(result["new_claim_id"], k2["claim_id"])
+        self.assertEqual(result["old_claim_id"], k1["claim_id"])
+        self.assertEqual(result["new_state"], "confirmed")
+        self.assertEqual(result["old_state"], "superseded")
+        self.assertIsInstance(result["confirmation"], str)
+        k2_rows = self._version_rows(k2["claim_id"])
+        k1_rows = self._version_rows(k1["claim_id"])
+        self.assertEqual(k2_rows[-1]["state"], "confirmed")
+        self.assertEqual(k2_rows[-1]["change_reason"], "promoted")
+        self.assertEqual(k2_rows[-2]["state"], "superseded")
+        self.assertEqual(k1_rows[-1]["state"], "superseded")
+        self.assertEqual(k1_rows[-1]["change_reason"], "changed")
+        self.assertEqual(k1_rows[-1]["version"], k1_rows[-2]["version"] + 1)
+        link_row = self._link_row(link["link_id"])
+        self.assertEqual(link_row["status"], "accepted")
+        self.assertIsNotNone(link_row["resolved_at"])
+        conn = self.store._connect()
+        try:
+            confirmations = list(
+                conn.execute(
+                    "SELECT id FROM memory_sources "
+                    "WHERE source_kind = 'user_confirmation'"
+                )
+            )
+        finally:
+            conn.close()
+        self.assertTrue(confirmations)
+
+    def test_accepted_link_ranks_only_new_claim(self) -> None:
+        k1, k2, link = self._linked_pair()
+        accept_memory_reconciliation(TENANT_A, link["link_id"], store=self.store)
+        rows = rank_claims(
+            TENANT_A, "где я живу", states=["confirmed"], store=self.store
+        )
+        contents = [_as_text(row.get("content")) for row in rows]
+        self.assertEqual(contents, [PERM_NEG])
+
+    def test_accept_fts_drops_old_and_keeps_new(self) -> None:
+        k1, k2, link = self._linked_pair()
+        build_claim_fts_index(TENANT_A, store=self.store)
+        accept_memory_reconciliation(TENANT_A, link["link_id"], store=self.store)
+        old_hits = [
+            row
+            for row in rank_claims_fts(TENANT_A, "Казани", store=self.store)
+            if str(row["claim_id"]) == str(k1["claim_id"])
+        ]
+        self.assertEqual(old_hits, [])
+        new_ids = {
+            str(row["claim_id"])
+            for row in rank_claims_fts(TENANT_A, "Пермь", store=self.store)
+        }
+        self.assertIn(str(k2["claim_id"]), new_ids)
+        terminal = get_authorized_claim(
+            TENANT_A,
+            str(k1["claim_id"]),
+            include_content=True,
+            store=self.store,
+        )
+        self.assertEqual(terminal["state"], "superseded")
+        self.assertEqual(_as_text(terminal.get("content")), KAZAN)
+
+    def test_reject_keeps_facts_and_blocks_reproposal(self) -> None:
+        k1, k2, link = self._linked_pair()
+        result = reject_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["new_state"], "candidate")
+        self.assertEqual(result["old_state"], "confirmed")
+        link_row = self._link_row(link["link_id"])
+        self.assertEqual(link_row["status"], "rejected")
+        self.assertIsNotNone(link_row["resolved_at"])
+        self.assertEqual(self._version_rows(k1["claim_id"])[-1]["state"], "confirmed")
+        self.assertEqual(self._version_rows(k2["claim_id"])[-1]["state"], "candidate")
+        again = propose_reconciliation(
+            TENANT_A,
+            str(k2["claim_id"]),
+            str(k1["claim_id"]),
+            store=self.store,
+        )
+        self.assertEqual(again["link_id"], link["link_id"])
+        self.assertEqual(again["status"], "rejected")
+
+    def test_direct_confirm_then_accept_adds_no_second_version(self) -> None:
+        k1, k2, link = self._linked_pair()
+        confirm_candidate_memory(TENANT_A, str(k2["claim_id"]), store=self.store)
+        self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
+        k2_before = len(self._version_rows(k2["claim_id"]))
+        result = accept_memory_reconciliation(
+            TENANT_A, link["link_id"], store=self.store
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(result["new_state"], "confirmed")
+        self.assertEqual(len(self._version_rows(k2["claim_id"])), k2_before)
+        self.assertEqual(self._version_rows(k1["claim_id"])[-1]["state"], "superseded")
+
+    def test_accept_after_old_corrected_raises_conflict(self) -> None:
+        k1, k2, link = self._linked_pair()
+        correct_personal_memory(
+            TENANT_A,
+            str(k1["claim_id"]),
+            "я живу в Казани у Кремля",
+            store=self.store,
+        )
+        k1_count = len(self._version_rows(k1["claim_id"]))
+        k2_count = len(self._version_rows(k2["claim_id"]))
+        with self.assertRaises(ConflictError):
+            accept_memory_reconciliation(
+                TENANT_A, link["link_id"], store=self.store
+            )
+        self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
+        self.assertEqual(len(self._version_rows(k1["claim_id"])), k1_count)
+        self.assertEqual(len(self._version_rows(k2["claim_id"])), k2_count)
+        self.assertEqual(self._version_rows(k1["claim_id"])[-1]["state"], "confirmed")
+        self.assertEqual(self._version_rows(k2["claim_id"])[-1]["state"], "candidate")
+
+    def test_cross_tenant_and_missing_denials_identical(self) -> None:
+        _k1, _k2, link = self._linked_pair()
+        messages: list[str] = []
+        for flow in (accept_memory_reconciliation, reject_memory_reconciliation):
+            for link_id in (str(link["link_id"]), str(uuid.uuid4())):
+                with self.assertRaises(NotFoundError) as ctx:
+                    flow(TENANT_B, link_id, store=self.store)
+                messages.append(str(ctx.exception))
+        self.assertEqual(len(set(messages)), 1)
+        self.assertEqual(self._link_row(link["link_id"])["status"], "pending")
+
+    def test_list_memory_reconciliations_shows_contents(self) -> None:
+        k1, k2, link = self._linked_pair()
+        listing = list_memory_reconciliations(TENANT_A, store=self.store)
+        self.assertEqual(listing["count"], 1)
+        item = listing["items"][0]
+        self.assertEqual(item["link_id"], link["link_id"])
+        self.assertEqual(item["from_claim_id"], k2["claim_id"])
+        self.assertEqual(item["to_claim_id"], k1["claim_id"])
+        self.assertEqual(_as_text(item["new_content"]), PERM_NEG)
+        self.assertEqual(_as_text(item["old_content"]), KAZAN)
+        empty = list_memory_reconciliations(
+            TENANT_A, status="accepted", store=self.store
+        )
+        self.assertEqual(empty["count"], 0)
+        self.assertEqual(empty["items"], [])
+
+    def test_erase_old_claim_removes_link(self) -> None:
+        k1, k2, link = self._linked_pair()
+        self.store.erase_claim(TENANT_A, str(k1["claim_id"]))
+        conn = self.store._connect()
+        try:
+            rows = list(
+                conn.execute(
+                    "SELECT id FROM memory_claim_links "
+                    "WHERE from_claim_id = ? OR to_claim_id = ?",
+                    (str(k1["claim_id"]), str(k1["claim_id"])),
+                )
+            )
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+        survivor = get_authorized_claim(
+            TENANT_A, str(k2["claim_id"]), store=self.store
+        )
+        self.assertEqual(survivor["state"], "candidate")
+
+    def test_erase_new_claim_removes_link(self) -> None:
+        k1, k2, link = self._linked_pair()
+        self.store.erase_claim(TENANT_A, str(k2["claim_id"]))
+        conn = self.store._connect()
+        try:
+            rows = list(
+                conn.execute(
+                    "SELECT id FROM memory_claim_links "
+                    "WHERE from_claim_id = ? OR to_claim_id = ?",
+                    (str(k2["claim_id"]), str(k2["claim_id"])),
+                )
+            )
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+        survivor = get_authorized_claim(
+            TENANT_A, str(k1["claim_id"]), store=self.store
+        )
+        self.assertEqual(survivor["state"], "confirmed")
 
 
 if __name__ == "__main__":
