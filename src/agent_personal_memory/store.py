@@ -2573,7 +2573,7 @@ class PersonalMemoryStore:
         row = conn.execute(
             "SELECT action FROM memory_audit "
             "WHERE tenant_id = ? AND target_kind = 'claim_version' "
-            "AND target_id = ? LIMIT 1",
+            "AND target_id = ? ORDER BY rowid LIMIT 1",
             (tenant_id, str(version_row["id"])),
         ).fetchone()
         if row is not None:
@@ -2787,6 +2787,7 @@ class PersonalMemoryStore:
                         tenant_id,
                         str(row["id"]),
                         collapse_promoted=True,
+                        include_content=False,
                     )["entries"],
                 }
                 self._append_audit(

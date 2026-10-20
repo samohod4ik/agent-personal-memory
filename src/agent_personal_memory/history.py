@@ -86,7 +86,8 @@ def _accepted_links_to(
     included: set[str],
 ) -> dict[str, list[sqlite3.Row]]:
     """Accepted links pointing into each included claim, keyed by the
-    superseded (``to_claim_id``) side."""
+    superseded (``to_claim_id``) side. A link counts only when its
+    ``from_claim_id`` is also in the visible component."""
     links: dict[str, list[sqlite3.Row]] = {}
     for claim_id in included:
         rows = conn.execute(
@@ -95,8 +96,11 @@ def _accepted_links_to(
             "WHERE tenant_id = ? AND status = 'accepted' AND to_claim_id = ?",
             (tenant_id, claim_id),
         ).fetchall()
-        if rows:
-            links[claim_id] = list(rows)
+        visible = [
+            row for row in rows if str(row["from_claim_id"]) in included
+        ]
+        if visible:
+            links[claim_id] = visible
     return links
 
 
@@ -106,11 +110,12 @@ def _claim_entries(
     tenant_id: str,
     claim_id: str,
     links_to: dict[str, list[sqlite3.Row]],
+    *,
+    include_content: bool,
 ) -> list[dict[str, Any]]:
     versions = conn.execute(
-        "SELECT id, claim_id, tenant_id, version, state, sensitivity, "
-        "content_enc, confidence, explanation_enc, valid_from, valid_to, "
-        "expires_at, supersedes_id, created_at, change_reason "
+        "SELECT id, version, state, content_enc, explanation_enc, "
+        "created_at, change_reason "
         "FROM memory_claim_versions "
         "WHERE claim_id = ? AND tenant_id = ? ORDER BY version",
         (claim_id, tenant_id),
@@ -118,15 +123,6 @@ def _claim_entries(
     entries: list[dict[str, Any]] = []
     for version_row in versions:
         version = int(version_row["version"])
-        decrypted = memory._try_decrypt_claim_version(
-            conn, tenant_id, claim_id, version_row
-        )
-        content = ""
-        if decrypted is not None:
-            try:
-                content = decrypted[0].decode("utf-8")
-            except UnicodeDecodeError:
-                content = ""
         reason, inferred = memory._version_reason(
             conn, tenant_id, claim_id, version_row
         )
@@ -135,19 +131,28 @@ def _claim_entries(
             if version == int(link["to_version"]) + 1:
                 linked_claim_id = str(link["from_claim_id"])
                 break
-        entries.append(
-            {
-                "claim_id": claim_id,
-                "version": version,
-                "at": str(version_row["created_at"]),
-                "state": str(version_row["state"]),
-                "reason": reason,
-                "inferred": inferred,
-                "content": content,
-                "linked_claim_id": linked_claim_id,
-                "promoted_at": None,
-            }
-        )
+        entry: dict[str, Any] = {
+            "claim_id": claim_id,
+            "version": version,
+            "at": str(version_row["created_at"]),
+            "state": str(version_row["state"]),
+            "reason": reason,
+            "inferred": inferred,
+            "linked_claim_id": linked_claim_id,
+            "promoted_at": None,
+        }
+        if include_content:
+            content = ""
+            decrypted = memory._try_decrypt_claim_version(
+                conn, tenant_id, claim_id, version_row
+            )
+            if decrypted is not None:
+                try:
+                    content = decrypted[0].decode("utf-8")
+                except UnicodeDecodeError:
+                    content = ""
+            entry["content"] = content
+        entries.append(entry)
     return entries
 
 
@@ -217,18 +222,28 @@ def history_entries_on(
     root_claim_id: str,
     *,
     collapse_promoted: bool,
+    include_content: bool = True,
 ) -> dict[str, Any]:
     """History for the accepted-link component around ``root_claim_id``.
 
     Caller guarantees the root claim is visible; this helper runs inside
     the caller's transaction so ``store.explain_claim`` can reuse it.
+    With ``include_content=False`` entries carry no ``content`` key and
+    nothing is decrypted (the explain safe-provenance contract).
     """
     included = _component_claims(memory, conn, tenant_id, root_claim_id)
     links_to = _accepted_links_to(conn, tenant_id, included)
     entries: list[dict[str, Any]] = []
     for claim_id in sorted(included):
         entries.extend(
-            _claim_entries(memory, conn, tenant_id, claim_id, links_to)
+            _claim_entries(
+                memory,
+                conn,
+                tenant_id,
+                claim_id,
+                links_to,
+                include_content=include_content,
+            )
         )
     if collapse_promoted:
         entries = _collapse_promoted(entries)
@@ -260,16 +275,20 @@ def personal_memory_history(
     component. Exactly one of ``claim_id``/``query`` selects the root;
     ``query`` resolves to the first ``rank_claims`` hit over the
     candidate/confirmed/superseded/retracted states."""
-    has_id = isinstance(claim_id, str) and bool(claim_id)
-    has_query = isinstance(query, str) and bool(query)
-    if has_id == has_query:
+    if claim_id is not None and (
+        not isinstance(claim_id, str) or not claim_id
+    ):
+        raise ValidationError("claim_id: must be a non-empty string")
+    if query is not None and (not isinstance(query, str) or not query):
+        raise ValidationError("query: must be a non-empty string")
+    if (claim_id is None) == (query is None):
         raise ValidationError(
             "history: exactly one of claim_id or query is required"
         )
     if not isinstance(collapse_promoted, bool):
         raise ValidationError("collapse_promoted: must be a bool")
     memory = store
-    if has_query:
+    if query is not None:
         ranked = rank_claims(
             actor,
             query,

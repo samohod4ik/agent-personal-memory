@@ -265,12 +265,8 @@ class PersonalMemoryOwnershipExportTests(unittest.TestCase):
         self.assertIn("document", kinds)
         self.assertIn("user_confirmation", kinds)
         self.assertIn(ALICE_TITLE, labels)
-        # T6-HISTORY: the "history" key carries owner-visible per-version
-        # content by design; the envelope itself still exposes no
-        # top-level content field, and the packed payload must not carry
-        # snapshots, ciphertext field names or cross-tenant identifiers.
-        self.assertNotIn("content", explanation)
         packed = self._packed(explanation)
+        self.assertNotIn("content", packed)
         self.assertNotIn("snapshot", packed)
         self.assertNotIn("pmA", packed)
         self.assertNotIn(ids["bob_source_id"], packed)

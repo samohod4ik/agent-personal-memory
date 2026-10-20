@@ -339,6 +339,18 @@ class RetractErrorTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _retract_rejections(self) -> int:
+        conn = self.store._connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memory_audit "
+                "WHERE action = 'claim.retract' AND outcome = 'rejected' "
+                "AND policy_reason = 'invalid_transition'"
+            ).fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
+
     def test_missing_and_foreign_are_byte_identical_no_source(self) -> None:
         created = remember_personal_insight(TENANT_A, F4, store=self.store)
         claim_id = str(created["claim_id"])
@@ -358,10 +370,12 @@ class RetractErrorTests(unittest.TestCase):
         claim_id = str(created["claim_id"])
         retract_personal_memory(TENANT_A, claim_id, store=self.store)
         before = self._source_count()
+        before_audit = self._retract_rejections()
         with self.assertRaises(ValidationError) as exc:
             retract_personal_memory(TENANT_A, claim_id, store=self.store)
         self.assertEqual(str(exc.exception), "claim: invalid transition")
         self.assertEqual(self._source_count(), before)
+        self.assertEqual(self._retract_rejections() - before_audit, 1)
 
     def test_retract_of_superseded_is_invalid_no_source(self) -> None:
         k1 = remember_personal_insight(TENANT_A, KAZAN, store=self.store)
@@ -684,6 +698,40 @@ class HistoryLinkTests(unittest.TestCase):
         self.assertTrue(
             any(item["claim_id"] == self.k1_id for item in result["entries"])
         )
+        self.assertTrue(
+            all(
+                item["linked_claim_id"] is None
+                for item in result["entries"]
+            )
+        )
+
+    def test_expired_linked_claim_disappears(self) -> None:
+        conn = self.store._connect()
+        try:
+            conn.execute(
+                "UPDATE memory_claim_versions SET expires_at = ? "
+                "WHERE claim_id = ?",
+                ("2020-01-01T00:00:00Z", self.k2_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        result = personal_memory_history(
+            TENANT_A, self.k1_id, store=self.store
+        )
+        self.assertEqual(result["current_claim_id"], self.k1_id)
+        self.assertTrue(
+            all(item["claim_id"] != self.k2_id for item in result["entries"])
+        )
+        self.assertTrue(
+            any(item["claim_id"] == self.k1_id for item in result["entries"])
+        )
+        self.assertTrue(
+            all(
+                item["linked_claim_id"] is None
+                for item in result["entries"]
+            )
+        )
 
 
 class HistoryV4Tests(unittest.TestCase):
@@ -734,6 +782,21 @@ class HistoryV4Tests(unittest.TestCase):
             ["created", "promoted", "changed"],
         )
         self.assertTrue(all(item["inferred"] for item in result["entries"]))
+
+    def test_retracted_version_reason_is_unknown_after_downgrade(self) -> None:
+        store = PersonalMemoryStore(data_dir=self.data_dir)
+        created = remember_personal_insight(TENANT_A, F4, store=store)
+        claim_id = str(created["claim_id"])
+        retract_personal_memory(TENANT_A, claim_id, store=store)
+        _downgrade_to_v4(self.db_path)
+        reopened = PersonalMemoryStore(data_dir=self.data_dir)
+        result = personal_memory_history(
+            TENANT_A, claim_id, store=reopened
+        )
+        last = result["entries"][-1]
+        self.assertEqual(last["state"], "retracted")
+        self.assertEqual(last["reason"], "unknown")
+        self.assertIs(last["inferred"], True)
 
 
 class HistoryVisibilityTests(unittest.TestCase):
@@ -799,6 +862,35 @@ class HistoryVisibilityTests(unittest.TestCase):
         got = get_authorized_claim(TENANT_A, self.k1_id, store=self.store)
         self.assertEqual(got["state"], "superseded")
 
+    def test_history_of_retracted_root_by_id(self) -> None:
+        result = personal_memory_history(
+            TENANT_A, self.retracted_id, store=self.store
+        )
+        self.assertEqual(result["claim_id"], self.retracted_id)
+        self.assertEqual(result["current_claim_id"], self.retracted_id)
+        last = result["entries"][-1]
+        self.assertEqual(last["state"], "retracted")
+        self.assertEqual(last["reason"], "retracted")
+
+    def test_explain_history_entries_carry_no_content(self) -> None:
+        explained = explain_claim(TENANT_A, self.k2_id, store=self.store)
+        history = explained["history"]
+        self.assertTrue(history)
+        expected_keys = {
+            "claim_id",
+            "version",
+            "at",
+            "state",
+            "reason",
+            "inferred",
+            "linked_claim_id",
+            "promoted_at",
+        }
+        for item in history:
+            self.assertNotIn("content", item)
+            for key in expected_keys:
+                self.assertIn(key, item)
+
     def test_explain_restricted_and_expired_still_deny(self) -> None:
         for claim_id in (self.restricted_id, self.expired_id):
             with self.subTest(claim_id=claim_id):
@@ -863,6 +955,20 @@ class HistoryValidationTests(unittest.TestCase):
             personal_memory_history(TENANT_A, "", store=self.store)
         with self.assertRaises(ValidationError):
             personal_memory_history(TENANT_A, query="", store=self.store)
+
+    def test_selector_values_must_be_non_empty_strings(self) -> None:
+        with self.assertRaises(ValidationError):
+            personal_memory_history(
+                TENANT_A, 123, query="кофе", store=self.store
+            )
+        with self.assertRaises(ValidationError):
+            personal_memory_history(
+                TENANT_A, "", query=None, store=self.store
+            )
+        with self.assertRaises(ValidationError):
+            personal_memory_history(
+                TENANT_A, None, query=5, store=self.store
+            )
 
     def test_collapse_promoted_must_be_bool(self) -> None:
         claim = _candidate(self.store, TENANT_A, CAT, "hist-val-bool")

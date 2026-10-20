@@ -181,6 +181,14 @@ def retract_personal_memory(
     reason = validate_explanation(explanation)
     row = get_authorized_claim(actor, claim, store=memory)
     if str(row["state"]) not in {item.value for item in ACTIVE_READ_STATES}:
+        with store._tx() as conn:
+            tenant_id = store._ensure_principal_on(conn, actor)
+            store._reject_claim(
+                conn,
+                tenant_id=tenant_id,
+                action="claim.retract",
+                policy_reason="invalid_transition",
+            )
         raise ValidationError("claim: invalid transition")
     confirmation = _register_actor_source(
         actor,
