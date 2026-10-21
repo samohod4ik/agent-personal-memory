@@ -32,9 +32,16 @@ Python, опциональный MCP-сервер (stdio) и Agent Skill. Лиц
 - **Физическое удаление.** Подтверждённое удаление уничтожает обёрнутые DEK
   и шифрованные блобы, убирает рёбра поддержки и строки FTS, уплотняет базу
   и оставляет только обезличенную tombstone-квитанцию.
-- **Детерминированный recall.** SQLite FTS5 (тенант-фильтр внутри `MATCH`)
-  плюс лексико-сущностное ранжирование с учётом свежести и tenant-local
-  BM25 — без эмбеддингов и без LLM в цикле.
+- **Детерминированный recall.** SQLite FTS5 (ограничение по владельцу
+  внутри FTS-запроса) плюс лексико-сущностное ранжирование с учётом
+  свежести и стемминга RU/EN, и tenant-local BM25 — без эмбеддингов и
+  без LLM в цикле.
+- **Конфликты решает владелец.** Когда новая запись противоречит
+  подтверждённой, детерминированный судья предлагает связь `supersedes`
+  вместо тихой перезаписи; только принятие владельцем повышает новую
+  запись и вытесняет старую. Полная история по версиям (`reason`,
+  принятые связи в обе стороны) и состояние `retracted` для фактов,
+  которые перестали быть истиной, но запись о них должна сохраниться.
 - **Объяснимость и экспорт.** `explain_claim` / `explain_why_remembered`
   показывают происхождение, состояние жизненного цикла и опорные источники;
   `export_owner_data` делает полный экспорт владельца. Тексты для
@@ -46,7 +53,8 @@ Python, опциональный MCP-сервер (stdio) и Agent Skill. Лиц
 
 ## Установка
 
-Требуется Python 3.10+. Единственная runtime-зависимость — `cryptography>=42`.
+Требуется Python 3.10+. Runtime-зависимости: `cryptography>=42` и
+`snowballstemmer>=3.0.1,<4` (BSD-3-Clause).
 
 ```bash
 pip install .            # из checkout
@@ -54,6 +62,15 @@ pip install ".[mcp]"     # с опциональным MCP-сервером
 # или напрямую из репозитория при наличии доступа:
 pip install "git+ssh://git@github.com/samohod4ik/agent-personal-memory.git"
 ```
+
+### Обновление с 0.1.x
+
+Миграция схемы v4→v5 выполняется автоматически при первом открытии и
+идемпотентна — но базу, переведённую на v5, **нельзя** открыть сборкой
+0.1.x. Сделайте резервную копию `<data_dir>` перед обновлением. Чтобы
+получить FTS-ранжирование со стеммингом, один раз на тенанта перестройте
+производный индекс вызовом `build_claim_fts_index` — до этого
+`rank_claims_fts` автоматически откатывается на обычное ранжирование.
 
 ## Быстрый старт (< 15 минут)
 
@@ -128,6 +145,126 @@ with tempfile.TemporaryDirectory(prefix="pm-quickstart-") as data_dir:
     print(result["confirmation"])
 ```
 
+## Нормализация поиска
+
+Recall детерминирован и двуязычен. Текст запроса и сохранённый текст
+нормализуются одинаково — casefold, `ё`→`е`, стемминг Snowball для
+русского и английского (через обязательную зависимость
+`snowballstemmer`) — поэтому «какая видеокарта у меня» находит и факт,
+записанный как «видеокартой». Токен засчитывается, если он входит
+подстрокой (поведение 0.1.x) **или** его основа совпадает с основой из
+текста, так что все прежние находки по содержательным словам
+сохраняются; ложные срабатывания только по стоп-словам убраны, а запрос
+целиком из стоп-слов ведёт себя как раньше. Идентификаторы не стеммятся:
+токены с цифрами, смешанная кириллица+латиница, UUID, даты и токены до
+6 символов, изначально целиком в верхнем регистре — «RTX 3060»
+по-прежнему совпадает точно.
+
+Известные пределы: разные основы Snowball не объединяются
+(«созваниваться» не совпадает с «созвоны» — это закреплено
+expected-failure тестом), а поверхности, ограниченные `query_claims`,
+держат потолок в 500 строк. Опциональный FTS-индекс — v2:
+`memory_claim_fts_index` хранит `body` и `body_stem` (открытая копия из
+основ — см. threat model) и версию нормализатора в `memory_fts_meta`;
+индекс синхронизируется внутри транзакции записи при
+create/confirm/correct/accept/retract/erase, restricted- и неактивные
+записи в него не попадают, а таблица старого формата или с другой
+версией считается отсутствующей (откат на обычное ранжирование), пока
+`build_claim_fts_index` не перестроит её для тенанта.
+
+## Согласование замен
+
+Когда новая запись противоречит подтверждённой, библиотека не выбирает
+победителя — это делает владелец. Результат `remember_personal_insight`
+и сохранённые элементы `learn_from_turn` несут ключ `reconciliations`:
+ожидающие решения связи `supersedes` (новая → старая), предложенные
+`ConflictJudge` после сравнения не более чем с пятью подтверждёнными
+записями того же владельца. Судья по умолчанию `SlotRuleJudge`
+(`slot_rule.v1`) детерминирован и консервативен — он сравнивает
+несколько личных слотов (дом, имя, обращение; RU и EN) и лучше пропустит
+противоречие, чем предложит ложную замену; хост может подставить любого
+судью (например, LLM) через `judge=`. Противоречие
+оставляет новую запись `candidate`, а старую — `confirmed`;
+`accept_memory_reconciliation` повышает новую и вытесняет старую —
+предварительно проверив, что старая запись не менялась с момента
+предложения, — а `reject_memory_reconciliation` отклоняет замену.
+
+```python
+import tempfile
+
+from agent_personal_memory import (
+    Actor,
+    PersonalMemoryStore,
+    accept_memory_reconciliation,
+    list_memory_reconciliations,
+    personal_memory_history,
+    rank_claims,
+    remember_personal_insight,
+)
+
+with tempfile.TemporaryDirectory(prefix="pm-reconcile-") as data_dir:
+    store = PersonalMemoryStore(data_dir=data_dir)
+    owner = Actor(platform="cli", user_id="owner-1", display_name="Owner")
+
+    first = remember_personal_insight(owner, "I live in Kazan", store=store)
+    assert first["state"] == "confirmed"
+    assert first["reconciliations"] == []
+
+    second = remember_personal_insight(
+        owner, "I moved to Perm, I no longer live in Kazan", store=store
+    )
+    # Детерминированный судья видит противоречие: новая запись
+    # остаётся кандидатом, а вместо перезаписи создаётся ожидающая
+    # решения связь supersedes (новая -> старая).
+    assert second["state"] == "candidate"
+    link = second["reconciliations"][0]
+    assert link["relation"] == "supersedes"
+    assert link["status"] == "pending"
+
+    pending = list_memory_reconciliations(owner, store=store)
+    assert pending["count"] == 1
+
+    # Решение принимает только владелец: accept повышает новую запись
+    # и вытесняет старую.
+    resolved = accept_memory_reconciliation(
+        owner, link["link_id"], store=store
+    )
+    assert resolved["status"] == "accepted"
+    assert resolved["new_state"] == "confirmed"
+    assert resolved["old_state"] == "superseded"
+
+    hits = rank_claims(owner, "where do I live", store=store)
+    assert str(hits[0]["claim_id"]) == str(second["claim_id"])
+
+    # История проходит по цепочке версий и принятой связи.
+    history = personal_memory_history(
+        owner, claim_id=str(first["claim_id"]), store=store
+    )
+    assert history["current_claim_id"] == str(second["claim_id"])
+    assert {entry["claim_id"] for entry in history["entries"]} == {
+        str(first["claim_id"]),
+        str(second["claim_id"]),
+    }
+    print(f"current memory: {history['current_claim_id']}")
+```
+
+## История и отзыв
+
+`personal_memory_history` (по `claim_id` или `query`) проходит цепочку
+версий записи и все принятые замены вокруг неё — хронологические записи
+с состоянием, `reason` (`created` / `promoted` / `changed` /
+`retracted`), временными метками и содержимым для владельца. Шаг
+повышения по умолчанию свёрнут в запись создания (`collapse_promoted`);
+`current_claim_id` указывает на новейшую запись цепочки. У версий,
+записанных базами 0.1.x, причина выводится из журнала аудита
+(`inferred: true`). `explain_claim` несёт те же записи только как
+метаданные. Когда факт перестал быть истиной, но запись должна
+сохраниться, `retract_personal_memory` добавляет терминальную версию
+`retracted`: запись уходит из всех чтений по умолчанию, остаётся
+доступной по id и в истории, ожидающие связи с её участием
+автоматически отклоняются, а содержимое остаётся зашифрованным, пока
+`forget_personal_memory` его не сотрёт.
+
 ## Карта API
 
 Все имена ниже импортируются из `agent_personal_memory` (каноническая
@@ -146,6 +283,12 @@ confirm-gate операции требуют `store` как обязательн
 | Ревью | `list_candidate_memories` | Список черновиков, ожидающих ревью владельца |
 | | `confirm_candidate_memory` | Повысить кандидата до `confirmed` через источник подтверждения пользователя |
 | | `reject_candidate_memory` | Предпросмотр удаления кандидата (через confirm-gate) |
+| Согласование | `list_memory_reconciliations` | Список связей замены (по умолчанию `pending`) с локализованным заголовком `heading` и видимыми текстами старой и новой записи |
+| | `accept_memory_reconciliation` | Принять ожидающую связь `supersedes`: повышает новую запись, вытесняет старую (с проверкой свежести) |
+| | `reject_memory_reconciliation` | Пометить ожидающую связь отклонённой; обе записи не меняются |
+| | `propose_reconciliation` / `propose_reconciliations` | Ручное предложение связи / проход судьёй; `ConflictJudge`, `SlotRuleJudge`, `Relation` образуют шов судьи (kwarg `judge=`) |
+| История / жизненный цикл | `personal_memory_history` | Хронологическая история версий и связей одной записи (`claim_id` или `query`; `collapse_promoted` включён по умолчанию) |
+| | `retract_personal_memory` | Терминальное состояние `retracted`: скрыто из чтений по умолчанию, читается по id, содержимое остаётся зашифрованным до forget |
 | Чтение / ранжирование | `list_personal_memories` | Инвентарь для владельца («что ты запомнил?»), локализация EN/RU |
 | | `query_claims` / `query_sources` | Авторизованные запросы метаданных; фильтры по закрытому словарю применяются до расшифровки |
 | | `get_authorized_claim` / `get_authorized_source` | Чтение одной записи; отсутствующие, чужие и удалённые id дают одинаковый `NotFoundError` |
@@ -232,7 +375,7 @@ SKILL.md.
 LLM-извлечение (ранжирование — лексическое/BM25, извлечение — на основе
 правил, EN/RU), у него нет графовой памяти и управляемого облачного уровня.
 Выбирайте его, когда приоритет — маленькая аудируемая поверхность
-зависимостей (одна runtime-зависимость), шифротекст на диске и удаление,
+зависимостей (две runtime-зависимости), шифротекст на диске и удаление,
 подтверждаемое человеком — а не широта recall.
 
 ## Заметки по безопасности
@@ -246,22 +389,25 @@ LLM-извлечение (ранжирование — лексическое/BM
   `learn_from_turn`, `correct_personal_memory`, `forget_personal_memory`,
   `do_not_remember`, `confirm_candidate_memory`, `reject_candidate_memory`)
   требуют `store` как обязательный именованный аргумент — запись никогда не
-  уходит в неявное дефолтное хранилище. Функции чтения по-прежнему принимают
-  `store=None`, который открывает, а при отсутствии создаёт, каталог данных
-  по умолчанию (`PERSONAL_MEMORY_DATA_DIR`, иначе
-  `~/.agent-personal-memory`); при встраивании передавайте явный `store=`
-  везде, чтобы забытый аргумент не читал дефолтное расположение хоста
-  вместо нужного хранилища.
+  уходит в неявное дефолтное хранилище. Хелперы согласования и истории
+  (`list_memory_reconciliations`, `accept_memory_reconciliation`,
+  `reject_memory_reconciliation`, `personal_memory_history`,
+  `retract_personal_memory`) требуют `store=` так же. Функции чтения
+  по-прежнему принимают `store=None`, который открывает, а при
+  отсутствии создаёт, каталог данных по умолчанию
+  (`PERSONAL_MEMORY_DATA_DIR`, иначе `~/.agent-personal-memory`); при
+  встраивании передавайте явный `store=` везде, чтобы забытый аргумент
+  не читал дефолтное расположение хоста вместо нужного хранилища.
 - Удаление физическое внутри живой базы, но не распространяется на бэкапы,
   снапшоты и копии на уровне ОС, сделанные раньше (`ErasureReceipt` несёт
   явную пометку о ретенции бэкапов).
 - Опциональный FTS-индекс (`build_claim_fts_index`) хранит открытый текст
-  утверждений внутри БД для ранжирования; не стройте его, если на диске
-  нужен строго шифротекст — `rank_claims`/`rank_claims_fts` работают без
-  него.
-- Цепочка поставок: единственная runtime-зависимость `cryptography>=42`;
-  SDK `mcp` поставляется только в дополнительной зависимости (extra) `mcp`.
-  Тесты и bench не требуют сети.
+  утверждений внутри БД для ранжирования — `body` и вторую открытую
+  производную копию `body_stem`; не стройте его, если на диске нужен
+  строго шифротекст — `rank_claims`/`rank_claims_fts` работают без него.
+- Цепочка поставок: runtime-зависимости `cryptography>=42` и
+  `snowballstemmer>=3.0.1,<4`; SDK `mcp` поставляется только в
+  дополнительной зависимости (extra) `mcp`. Тесты и bench не требуют сети.
 - Подробности: [docs/threat-model.md](docs/threat-model.md).
 
 ## Провенанс и лицензия

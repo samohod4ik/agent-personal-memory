@@ -99,6 +99,7 @@ _REQUIRED_NEW_FILE_ROWS = (
     "README.ru.md",
     "docs/PROVENANCE.md",
     "docs/adr/0002-core-boundary.md",
+    "docs/adr/0003-reconciliation-and-history.md",
     "docs/threat-model.md",
     "pyproject.toml",
     "skills/agent-personal-memory/SKILL.md",

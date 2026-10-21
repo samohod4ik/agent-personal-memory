@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 
+from .lifecycle import ACTIVE_READ_STATES
 from .locale import format_claim_summary, format_mutation_confirmation, normalize_language
 from .query import get_authorized_claim, query_claims
 from .store import PersonalMemoryStore, utcnow_iso
@@ -156,6 +157,61 @@ def correct_personal_memory(
             "correct",
             language=lang,
             version=corrected["version"],
+        ),
+    }
+
+
+def retract_personal_memory(
+    actor: Actor,
+    claim_id: object,
+    *,
+    explanation: object = None,
+    language: object = "en",
+    store: PersonalMemoryStore,
+) -> dict[str, object]:
+    """Append a terminal ``retracted`` version to one claim.
+
+    The ``user_confirmation`` source is registered only after the claim
+    has passed the authorized lookup and active-state check, so denied
+    or invalid transitions never mint an orphan source row.
+    """
+    lang = normalize_language(language)
+    memory = store
+    claim = _require_claim_id(claim_id)
+    reason = validate_explanation(explanation)
+    row = get_authorized_claim(actor, claim, store=memory)
+    if str(row["state"]) not in {item.value for item in ACTIVE_READ_STATES}:
+        with store._tx() as conn:
+            tenant_id = store._ensure_principal_on(conn, actor)
+            store._reject_claim(
+                conn,
+                tenant_id=tenant_id,
+                action="claim.retract",
+                policy_reason="invalid_transition",
+            )
+        raise ValidationError("claim: invalid transition")
+    confirmation = _register_actor_source(
+        actor,
+        source_kind="user_confirmation",
+        label="retraction",
+        payload=(reason or f"retract:{claim}").encode("utf-8"),
+        store=memory,
+    )
+    retracted = memory.retract_claim(
+        actor,
+        claim,
+        source_ids=[str(confirmation["source_id"])],
+    )
+    return {
+        "language": lang,
+        "claim_id": retracted["claim_id"],
+        "claim_version_id": retracted["claim_version_id"],
+        "version": retracted["version"],
+        "state": retracted["state"],
+        "confirmation": format_mutation_confirmation(
+            "retract",
+            language=lang,
+            version=retracted["version"],
         ),
     }
 

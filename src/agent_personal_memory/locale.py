@@ -10,10 +10,14 @@ _STATE_LABELS = {
     "en": {
         "candidate": "candidate memory",
         "confirmed": "confirmed memory",
+        "superseded": "superseded memory",
+        "retracted": "retracted memory",
     },
     "ru": {
         "candidate": "кандидат в память",
         "confirmed": "подтверждённая память",
+        "superseded": "заменённая память",
+        "retracted": "отозванная память",
     },
 }
 
@@ -61,6 +65,11 @@ _CANDIDATE_LIST_INTRO = {
     "ru": "Кандидаты в память, ожидающие вашего решения.",
 }
 
+_RECONCILIATION_LIST_HEADING = {
+    "en": "Proposed memory replacements:",
+    "ru": "Предложенные замены фактов:",
+}
+
 _EXPORT_HEADING = {
     "en": "Personal memory export for the current session owner.",
     "ru": "Экспорт личной памяти текущего пользователя сессии.",
@@ -80,6 +89,10 @@ _MUTATION_CONFIRM = {
     "correct": {
         "en": "Memory updated with your correction (version {version}).",
         "ru": "Память обновлена с вашим исправлением (версия {version}).",
+    },
+    "retract": {
+        "en": "Memory retracted and will no longer be used (version {version}).",
+        "ru": "Запись памяти отозвана и больше не будет использоваться (версия {version}).",
     },
     "forget_preview": {
         "en": "Preview: forget {summary}. Open /memory_delete to review the exact list.",
@@ -104,6 +117,14 @@ _MUTATION_CONFIRM = {
     "confirm_candidate": {
         "en": "Candidate memory confirmed and saved.",
         "ru": "Кандидат в память подтверждён и сохранён.",
+    },
+    "reconcile_accept": {
+        "en": "Done: the new fact replaced the old one; the old one is kept in history.",
+        "ru": "Готово: новый факт заменил прежний, прежний сохранён в истории.",
+    },
+    "reconcile_reject": {
+        "en": "Okay, I kept the previous fact.",
+        "ru": "Хорошо, оставил прежний факт.",
     },
     "reject_candidate_preview": {
         "en": "Preview: reject {summary}. Open /memory_delete to review the exact list.",
@@ -185,6 +206,10 @@ def format_list_heading(language: str) -> str:
 
 def format_candidate_list_heading(language: str) -> str:
     return _CANDIDATE_LIST_INTRO[normalize_language(language)]
+
+
+def format_reconciliation_list_heading(language: str) -> str:
+    return _RECONCILIATION_LIST_HEADING[normalize_language(language)]
 
 
 def format_export_heading(language: str) -> str:

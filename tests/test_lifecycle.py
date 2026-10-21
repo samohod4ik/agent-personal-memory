@@ -160,11 +160,12 @@ class PersonalMemoryLifecycleTests(unittest.TestCase):
         self.assertEqual(MemoryState.CANDIDATE, "candidate")
         self.assertEqual(MemoryState.CONFIRMED, "confirmed")
         self.assertEqual(MemoryState.SUPERSEDED, "superseded")
+        self.assertEqual(MemoryState.RETRACTED, "retracted")
         self.assertEqual(MemoryState.DELETED, "deleted")
         self.assertTrue(issubclass(MemoryState, str))
         self.assertEqual(
             {item.value for item in MemoryState},
-            {"candidate", "confirmed", "superseded", "deleted"},
+            {"candidate", "confirmed", "superseded", "retracted", "deleted"},
         )
 
     def test_create_candidate_shape_and_state(self) -> None:

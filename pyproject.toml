@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-personal-memory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first encrypted personal memory for AI agents (privacy-focused, owner-controlled)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = "MIT"
 authors = [
     {name = "samohod4ik"},
 ]
-dependencies = ["cryptography>=42"]
+dependencies = ["cryptography>=42", "snowballstemmer>=3.0.1,<4"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28.1"]

@@ -6,6 +6,7 @@ import re
 
 from .query import query_claims
 from .store import PersonalMemoryStore
+from .text_norm import STOP_WORDS, query_terms, tokenize
 from .types import Actor
 from .validation import validate_list_limit, validate_rank_query_text
 
@@ -79,6 +80,48 @@ def _entity_overlap(entities: list[str], haystack: str) -> tuple[float, bool]:
     return hits / len(entities), hits > 0
 
 
+def _normalize_text(text: str) -> str:
+    return text.casefold().replace("ё", "е")
+
+
+def _haystack_index(haystack: str) -> tuple[str, frozenset[str]]:
+    lowered = _normalize_text(haystack)
+    stems = frozenset(token.stem for token in tokenize(haystack))
+    return lowered, stems
+
+
+def _lexical_overlap_stemmed(query_text: str, haystack: str) -> tuple[float, bool]:
+    terms = query_terms(query_text)
+    if not terms:
+        return 0.0, False
+    lowered, stems = _haystack_index(haystack)
+    hits = sum(1 for term in terms if term.raw in lowered or term.stem in stems)
+    return hits / len(terms), hits > 0
+
+
+def _entity_overlap_stemmed(
+    entities: list[str], haystack: str, query_text: str
+) -> tuple[float, bool]:
+    # Stop-word entities only survive an all-stop query (kept for parity
+    # with query_terms so a stop-only query behaves exactly as before).
+    if any(not token.stop for token in tokenize(query_text)):
+        entities = [
+            entity for entity in entities if _normalize_text(entity) not in STOP_WORDS
+        ]
+    if not entities:
+        return 0.0, False
+    lowered, stems = _haystack_index(haystack)
+    hits = 0
+    for entity in entities:
+        if _normalize_text(entity) in lowered:
+            hits += 1
+            continue
+        parts = tokenize(entity)
+        if len(parts) == 1 and parts[0].stem in stems:
+            hits += 1
+    return hits / len(entities), hits > 0
+
+
 def _time_sort_key(created_at: object) -> str:
     return str(created_at or "")
 
@@ -88,12 +131,19 @@ def score_claim_row(
     *,
     query_tokens: list[str],
     entities: list[str],
+    query_text: str | None = None,
 ) -> tuple[float, list[str]]:
     content = _decode_text(row.get("content"))
     explanation = _decode_text(row.get("explanation"))
     haystack = f"{content}\n{explanation}".strip()
-    lexical_score, lexical_hit = _lexical_overlap(query_tokens, haystack)
-    entity_score, entity_hit = _entity_overlap(entities, haystack)
+    if query_text is None:
+        lexical_score, lexical_hit = _lexical_overlap(query_tokens, haystack)
+        entity_score, entity_hit = _entity_overlap(entities, haystack)
+    else:
+        lexical_score, lexical_hit = _lexical_overlap_stemmed(query_text, haystack)
+        entity_score, entity_hit = _entity_overlap_stemmed(
+            entities, haystack, query_text
+        )
     rank_score = min(1.0, (_LEXICAL_WEIGHT * lexical_score) + (_ENTITY_WEIGHT * entity_score))
     match_kinds: list[str] = []
     if lexical_hit:
@@ -137,6 +187,7 @@ def rank_claims(
             row,
             query_tokens=query_tokens,
             entities=entities,
+            query_text=query,
         )
         if rank_score <= 0.0:
             continue

@@ -59,6 +59,27 @@ class ReadmeQuickstartTests(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(result["erased_claim_ids"], [namespace["claim_id"]])
 
+    def test_reconcile_quickstart_block_executes(self) -> None:
+        # The second fenced python block in each README is the
+        # Kazan -> Perm reconcile/accept/history walkthrough; it must run
+        # verbatim against a temp store in both language variants.
+        for path, label in ((README_EN, "README.md"), (README_RU, "README.ru.md")):
+            with self.subTest(readme=label):
+                blocks = _python_blocks(path)
+                self.assertGreaterEqual(
+                    len(blocks), 2, f"{label} must contain a second ```python block"
+                )
+                namespace = _run_block(blocks[1], f"{label} reconcile")
+                resolved = namespace["resolved"]
+                self.assertEqual(resolved["status"], "accepted")
+                self.assertEqual(resolved["new_state"], "confirmed")
+                self.assertEqual(resolved["old_state"], "superseded")
+                history = namespace["history"]
+                self.assertEqual(
+                    history["current_claim_id"],
+                    str(namespace["second"]["claim_id"]),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,9 +63,30 @@ ADDED_SURFACE_NAMES = (
     "get_authorized_source",
     "assemble_context",
     "rank_claims",
+    "list_memory_reconciliations",
+    "accept_memory_reconciliation",
+    "reject_memory_reconciliation",
+    "personal_memory_history",
+    "retract_personal_memory",
 )
 
 CONFIRM_TOOL_NAME = "personal_memory_confirm"
+
+# Reconcile/history owner flows (issue #2/#3): plain owner-flow tools,
+# never preview-gated. name -> (properties, required).
+NEW_OWNER_FLOW_SCHEMAS = {
+    "list_memory_reconciliations": ({"status", "language"}, []),
+    "accept_memory_reconciliation": ({"link_id", "language"}, ["link_id"]),
+    "reject_memory_reconciliation": ({"link_id", "language"}, ["link_id"]),
+    "personal_memory_history": (
+        {"claim_id", "query", "collapse_promoted"},
+        [],
+    ),
+    "retract_personal_memory": (
+        {"claim_id", "explanation", "language"},
+        ["claim_id"],
+    ),
+}
 
 DESTRUCTIVE_TOOL_NAMES = (
     "forget_personal_memory",
@@ -173,6 +194,65 @@ class ToolSchemaSurfaceTests(unittest.TestCase):
                     self.assertNotEqual(
                         subschema.get("type"), "boolean", f"{name}.{key}"
                     )
+
+    def test_reconcile_surface_schemas_registered(self) -> None:
+        for name, (props, required) in NEW_OWNER_FLOW_SCHEMAS.items():
+            with self.subTest(tool=name):
+                schema = apm.TOOL_SCHEMAS[name]
+                self.assertEqual(schema["name"], name)
+                params = schema["parameters"]
+                self.assertEqual(set(params["properties"]), props)
+                self.assertEqual(params["required"], required)
+                self.assertIn("current session owner", schema["description"])
+                self.assertTrue(callable(getattr(apm, name, None)))
+
+    def test_new_owner_flows_are_not_preview_gated(self) -> None:
+        from agent_personal_memory import mcp as apm_mcp
+
+        for name in NEW_OWNER_FLOW_SCHEMAS:
+            with self.subTest(tool=name):
+                self.assertNotIn(name, apm_mcp._PREVIEW_TOOLS)
+
+    def test_reconcile_schema_details(self) -> None:
+        props = apm.TOOL_SCHEMAS["list_memory_reconciliations"]["parameters"][
+            "properties"
+        ]
+        self.assertEqual(
+            props["status"]["enum"], ["pending", "accepted", "rejected"]
+        )
+        self.assertEqual(props["language"]["enum"], ["en", "ru"])
+        history_props = apm.TOOL_SCHEMAS["personal_memory_history"][
+            "parameters"
+        ]["properties"]
+        self.assertEqual(history_props["collapse_promoted"]["type"], "boolean")
+        remember = apm.TOOL_SCHEMAS["remember_personal_insight"]
+        self.assertNotIn("judge", remember["parameters"]["properties"])
+        self.assertIn("reconciliations", remember["description"])
+
+    def test_states_enums_include_retracted(self) -> None:
+        for schema in (apm.QUERY_CLAIMS_SCHEMA, apm.RANK_CLAIMS_SCHEMA):
+            with self.subTest(schema=schema["name"]):
+                enum = schema["parameters"]["properties"]["states"]["items"][
+                    "enum"
+                ]
+                self.assertIn("retracted", enum)
+                self.assertIn("superseded", enum)
+
+    def test_write_helpers_require_explicit_store(self) -> None:
+        # Existing convention (correct_personal_memory): a missing store=
+        # kwarg is a TypeError, never a silent default data dir.
+        with self.assertRaises(TypeError):
+            apm.correct_personal_memory(ALICE, "c", "x")
+        for call in (
+            lambda: apm.list_memory_reconciliations(ALICE),
+            lambda: apm.accept_memory_reconciliation(ALICE, "link-1"),
+            lambda: apm.reject_memory_reconciliation(ALICE, "link-1"),
+            lambda: apm.personal_memory_history(ALICE, "claim-1"),
+            lambda: apm.retract_personal_memory(ALICE, "claim-1"),
+        ):
+            with self.subTest(call=call):
+                with self.assertRaises(TypeError):
+                    call()
 
     def test_confirm_schema_takes_only_nonce_and_matches_consume_path(self) -> None:
         schema = apm.TOOL_SCHEMAS[CONFIRM_TOOL_NAME]
@@ -300,6 +380,19 @@ class ToolSurfaceFlowTests(unittest.TestCase):
             self.assertNotIn("nonce", payload)
         rows = apm.query_claims(ALICE, store=self.store)
         self.assertIn(self.claim_id, {str(row["claim_id"]) for row in rows})
+
+    def test_retracted_state_query_roundtrip(self) -> None:
+        apm.retract_personal_memory(ALICE, self.claim_id, store=self.store)
+        retracted = apm.query_claims(
+            ALICE, states=["retracted"], store=self.store
+        )
+        self.assertEqual(
+            [str(row["claim_id"]) for row in retracted], [self.claim_id]
+        )
+        active = apm.query_claims(ALICE, store=self.store)
+        self.assertNotIn(
+            self.claim_id, {str(row["claim_id"]) for row in active}
+        )
 
     def test_two_phase_confirm_executes_bound_erasure(self) -> None:
         preview = apm.forget_personal_memory(
