@@ -59,8 +59,8 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
 
     def test_fresh_schema_creates_required_tables_without_fts(self) -> None:
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 5)
-        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 5)
+        self.assertEqual(store.SCHEMA_VERSION, 6)
+        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 6)
         conn = store._connect()
         try:
             names = {
@@ -76,7 +76,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
                 msg="plaintext FTS/search shadows are forbidden",
             )
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 5)
+            self.assertEqual(int(version), 6)
             index_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
                 "AND name = 'idx_memory_sources_lookup'"
@@ -116,11 +116,11 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM memory_principals").fetchone()[0]
             self.assertEqual(count, 1)
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 5)
+            self.assertEqual(int(version), 6)
         finally:
             conn.close()
 
-    def test_reopen_v5_database_is_a_noop(self) -> None:
+    def test_reopen_current_database_is_a_noop(self) -> None:
         first = PersonalMemoryStore(data_dir=self.data_dir)
         conn = first._connect()
         try:
@@ -164,7 +164,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT version FROM memory_schema"
             ).fetchone()[0]
-            self.assertEqual(int(version), 5)
+            self.assertEqual(int(version), 6)
         finally:
             conn.close()
 
@@ -244,7 +244,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
         source = Path(store_module.__file__).read_text(encoding="utf-8")
         self.assertIn("BEGIN IMMEDIATE", source)
 
-    def test_v1_database_upgrades_in_place_to_v5(self) -> None:
+    def test_v1_database_upgrades_in_place_to_current(self) -> None:
         from agent_personal_memory.store import _CREATE_SCHEMA_SQL
 
         db_path = self.data_dir / "personal_memory.db"
@@ -258,11 +258,11 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             probe.close()
 
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 5)
+        self.assertEqual(store.SCHEMA_VERSION, 6)
         conn = store._connect()
         try:
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 5)
+            self.assertEqual(int(version), 6)
             names = {
                 row[0]
                 for row in conn.execute("SELECT name FROM sqlite_master")
