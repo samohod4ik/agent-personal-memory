@@ -15,6 +15,9 @@ non-authorizing, the nonce exists only inside an operator-delivered
 from __future__ import annotations
 
 from .assembler import assemble_context
+from .journal import CapturePolicy, record_turn, get_journal_event, query_journal, remember_from_evidence, evidence_for_claim, prune_journal, correct_from_evidence
+from .layered import build_core, recall, link_memories, export_markdown
+from .consolidation import ConsolidationBudget, consolidate_period, pending_periods, mark_capture_complete
 from .confirmation import (
     REGISTRY as CONFIRM_REGISTRY,
     BoundTarget,
@@ -131,12 +134,14 @@ from .ux import (
 )
 from .validation import ValidationError
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Unbound store method re-exported under its source name (see docstring).
 create_candidate = PersonalMemoryStore.create_candidate
 
 __all__ = (
+    "CapturePolicy", "record_turn", "get_journal_event", "query_journal", "remember_from_evidence", "evidence_for_claim", "prune_journal", "correct_from_evidence",
+    "build_core", "recall", "link_memories", "export_markdown", "ConsolidationBudget", "consolidate_period", "pending_periods", "mark_capture_complete",
     "ACCEPT_MEMORY_RECONCILIATION_SCHEMA",
     "Actor",
     "ASSEMBLE_CONTEXT_SCHEMA",

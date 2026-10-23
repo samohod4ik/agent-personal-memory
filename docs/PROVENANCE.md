@@ -540,6 +540,16 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
   (`plugins/personal_memory/`) import references remain in the ported
   modules; the only env var read is `PERSONAL_MEMORY_DATA_DIR`.
 
+| `src/agent_personal_memory/journal.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `src/agent_personal_memory/layered.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `src/agent_personal_memory/layered_store.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `src/agent_personal_memory/consolidation.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `tests/test_layered_memory.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `bench/layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `bench/test_layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `docs/layered-memory.md` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `docs/layered-memory-plan.md` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+
 ## Retained compatibility strings
 
 Ported code intentionally keeps the following source strings verbatim. They
@@ -565,3 +575,17 @@ text — doc-only markers are scoped to their backticked notation.
 
 If a later task must retain an additional marker, it is added to this table
 and to `tools/hygiene_allowlist.txt` in the same commit.
+
+## Layered memory, issue #6 (0.3.0)
+
+Inspired by Iva, agent-second-brain and autograph by Serge Shima (smixs);
+reference Iva `00e357eddae7aacdad3d8fe5509531e2528d3b1d`. Original implementation;
+no source or prompts copied from those projects and no eve code vendored.
+Existing MIT license and attribution are preserved.
+
+
+Existing files changed: store migration v6 and atomic erasure/evidence hooks;
+learn optional original-source binding; assembler opt-in core budget; package
+exports/version and Windows tzdata dependency; schema expectations in store/v5
+migration tests; README/README.ru, CHANGELOG, threat model and quality criteria.
+Legacy APIs retain defaults; old database rollback requires its old backup.

@@ -53,7 +53,7 @@ for the embedding guide aimed at agents.
 ## Install
 
 Requires Python 3.10+. Runtime dependencies: `cryptography>=42` and
-`snowballstemmer>=3.0.1,<4` (BSD-3-Clause).
+`snowballstemmer>=3.0.1,<4` (BSD-3-Clause), plus `tzdata` on Windows.
 
 ```bash
 pip install .            # from a checkout
@@ -62,10 +62,10 @@ pip install ".[mcp]"     # with the optional MCP server
 pip install "git+ssh://git@github.com/samohod4ik/agent-personal-memory.git"
 ```
 
-### Upgrading from 0.1.x
+### Upgrading from 0.1.x / 0.2.x
 
-The v4→v5 schema migration runs automatically on first open and is
-idempotent — but a database migrated to v5 **cannot** be opened by 0.1.x
+The additive v4/v5→v6 schema migration runs automatically on first open and is
+idempotent — but a database migrated to v6 **cannot** be opened by 0.1.x/0.2.x
 builds. Back up `<data_dir>` before upgrading. To get stemmed FTS
 ranking, rebuild the derived index once per tenant with
 `build_claim_fts_index` — until then `rank_claims_fts` falls back to
@@ -411,3 +411,13 @@ ported file, its source path, and every deviation are mapped in
 [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
 License: [MIT](LICENSE) — Copyright (c) 2026 samohod4ik.
+
+## Layered memory (0.3)
+
+Inspired by [Iva](https://github.com/smixs/iva-agent), [agent-second-brain](https://github.com/smixs/agent-second-brain) and [autograph](https://github.com/smixs/autograph) by **Serge Shima (smixs)**.
+
+Opt-in encrypted event journal, exact source evidence, bounded current-fact core,
+period summaries, grounded links and explicit Markdown export are available as
+host APIs. One library owns their storage and erasure. See the
+[API, migration and privacy contract](docs/layered-memory.md). Raw capture is off
+by default; the host supplies authenticated identity, capture policy and scheduling.
