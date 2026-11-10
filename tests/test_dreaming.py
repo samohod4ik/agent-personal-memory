@@ -120,6 +120,22 @@ class DreamingTests(unittest.TestCase):
         self.assertEqual(validated[0]["state"], "candidate")
         self.assertEqual(validated[0]["evidence"], review["evidence"])
 
+    def test_numeric_operation_digest_is_opaque_but_semantic_secrets_still_rejected(self):
+        operation_id = "1234567890123" + "abcdef" * 8 + "abc"
+        self.assertEqual(len(operation_id), 64)
+        captured = self.receipt(operation_id=operation_id)
+        self.assertEqual(captured["status"], "recorded")
+        event = next(e for e in apm.query_journal(ACTOR, store=self.store, include_text=True)["items"]
+            if e["source_id"] == captured["source_id"])
+        self.assertEqual(event["action_receipt"]["operation_id"], operation_id)
+        self.assertIn(operation_id, event["text"])
+        for i, fields in enumerate(({"summary": "password is very-private"},
+                {"tool_name": "password"}, {"environment": {**ENV, "host": "password"}},
+                {"summary": "Do not remember this."})):
+            self.assertEqual(self.receipt("excluded-" + str(i), operation_id=operation_id, **fields)["status"], "skipped")
+        with self.assertRaises(apm.ValidationError):
+            self.receipt("bad-id", operation_id="password is very-private")
+
     def test_lesson_survives_new_session_but_not_new_environment(self):
         failure = self.receipt()
         success = self.receipt("effect", "observed", "succeeded", operation_id="deploy-2")

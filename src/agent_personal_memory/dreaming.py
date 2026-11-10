@@ -5,6 +5,8 @@ Model prose is retained only as an explicitly unconfirmed, scoped proposal.
 """
 from __future__ import annotations
 
+import re
+
 from .layered_store import encode
 from .insight_extract import turn_has_blocked_secret
 from .validation import ValidationError
@@ -29,6 +31,8 @@ def validate_receipt(value):
     result = {**value, "environment": validate_environment(value["environment"])}
     for key in ("operation_id", "tool_name"):
         _text(result[key], 200)
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", result["operation_id"]) is None:
+        raise ValidationError("receipt: opaque operation identifier required")
     _text(result["summary"])
     if result["phase"] not in {"requested", "started", "result", "observed"} or result["outcome"] not in {"unknown", "succeeded", "failed"}:
         raise ValidationError("receipt: invalid phase/outcome")

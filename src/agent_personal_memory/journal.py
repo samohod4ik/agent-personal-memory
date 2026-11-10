@@ -71,9 +71,7 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
         return {"status": "skipped", "reason": "capture_disabled"}
     _text(event_id, "event_id", 512)
     _text(text, "text", 65536)
-    if _NO_REMEMBER.search(text) or turn_has_blocked_secret(text):
-        return {"status": "skipped", "reason": "excluded"}
-    validate_snapshot(text.encode("utf-8"))
+    semantic_text = text
     if action_receipt is not None:
         from .dreaming import validate_receipt
         action_receipt = validate_receipt(action_receipt)
@@ -81,6 +79,13 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
             raise ValidationError("receipt: derived tool with captured parent required")
         if text != encode(action_receipt).decode():
             raise ValidationError("receipt: canonical body required")
+        # Host-generated opaque identifiers can contain digit runs resembling
+        # payment numbers. Scan the actual receipt semantics, not that ID.
+        # Summary, tool name and environment remain subject to all exclusions.
+        semantic_text = encode({k: v for k, v in action_receipt.items() if k != "operation_id"}).decode()
+    if _NO_REMEMBER.search(semantic_text) or turn_has_blocked_secret(semantic_text):
+        return {"status": "skipped", "reason": "excluded"}
+    validate_snapshot(text.encode("utf-8"))
     if role not in {"user", "assistant", "tool"} or origin not in {"direct", "forwarded", "derived", "imported"}:
         raise ValidationError("role/origin: unknown value")
     if parent_source_id is not None or parent_source_version is not None:
