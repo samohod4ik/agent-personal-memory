@@ -64,7 +64,7 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 timezone: str = "UTC", role: str = "user", origin: str = "direct",
                 session_id: str = "", attachments: tuple[str, ...] = (),
                 parent_source_id: str | None = None, parent_source_version: int | None = None,
-                policy: CapturePolicy, store: PersonalMemoryStore) -> dict:
+                policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None) -> dict:
     if not isinstance(policy, CapturePolicy):
         raise ValidationError("policy: CapturePolicy required")
     if not policy.enabled:
@@ -74,6 +74,13 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
     if _NO_REMEMBER.search(text) or turn_has_blocked_secret(text):
         return {"status": "skipped", "reason": "excluded"}
     validate_snapshot(text.encode("utf-8"))
+    if action_receipt is not None:
+        from .dreaming import validate_receipt
+        action_receipt = validate_receipt(action_receipt)
+        if role != "tool" or origin != "derived" or parent_source_id is None:
+            raise ValidationError("receipt: derived tool with captured parent required")
+        if text != encode(action_receipt).decode():
+            raise ValidationError("receipt: canonical body required")
     if role not in {"user", "assistant", "tool"} or origin not in {"direct", "forwarded", "derived", "imported"}:
         raise ValidationError("role/origin: unknown value")
     if parent_source_id is not None or parent_source_version is not None:
@@ -97,6 +104,8 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
     metadata = {"title": "Original event", "role": role, "origin": origin, "timezone": timezone,
                 "session_id": session_id, "attachments": json.dumps(list(attachments), ensure_ascii=False),
                 "parent_source_id": parent_source_id or "", "parent_source_version": str(parent_source_version or "")}
+    if action_receipt is not None:
+        metadata["action_receipt"] = json.dumps(action_receipt, ensure_ascii=False, sort_keys=True)
     envelope = hashlib.sha256(encode([text, metadata, occurred_at, expires])).hexdigest()
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
@@ -122,6 +131,10 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
             _, _, old_metadata = store._decrypt_version(conn, tenant, sid, old)
             if (old_metadata.get("role"), old_metadata.get("origin")) != (role, origin):
                 raise ConflictError("event role and origin are immutable")
+            old_receipt = json.loads(old_metadata["action_receipt"]) if old_metadata.get("action_receipt") else None
+            if bool(old_receipt) != bool(action_receipt) or (old_receipt and any(
+                    old_receipt[k] != action_receipt[k] for k in ("operation_id", "tool_name", "environment", "phase"))):
+                raise ConflictError("receipt execution identity is immutable")
             if row["envelope_hash"] == envelope:
                 return {"status": "replayed", "source_id": sid, "version": old["version"], "source_version_id": old["id"]}
             version = old["version"] + 1
@@ -143,7 +156,7 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                          (envelope, occurred_at, expires, sid))
         else:
             sid, version = str(uuid.uuid4()), 1
-            kind = "auto_insight_turn" if role == "user" and origin == "direct" else "assistant_message" if role == "assistant" else "document"
+            kind = "auto_insight_turn" if role == "user" and origin == "direct" else "assistant_message" if role == "assistant" else "tool_result" if action_receipt is not None else "document"
             now = utcnow_iso()
             conn.execute("INSERT INTO memory_sources(id,tenant_id,source_kind,keyed_lookup_hash,created_at) VALUES(?,?,?,?,?)",
                          (sid, tenant, kind, "", now))
@@ -187,7 +200,7 @@ def erase_derived_sources_on(store, conn, tenant, source_id):
     # A generated answer may still be in flight for another unchanged prompt.
     # Its parent's capture generation must fail admission after this mutation.
     invalidate_generation_on(conn, tenant)
-    children = {r[0] for r in conn.execute("SELECT id FROM memory_sources WHERE tenant_id=? AND source_kind='assistant_message' AND deleted_at IS NULL AND id<>?", (tenant, source_id))}
+    children = {r[0] for r in conn.execute("SELECT id FROM memory_sources WHERE tenant_id=? AND source_kind IN ('assistant_message','tool_result') AND deleted_at IS NULL AND id<>?", (tenant, source_id))}
     edges = conn.execute("SELECT source_id,parent_source_id FROM memory_source_lineage WHERE tenant_id=?", (tenant,)).fetchall()
     pending = {source_id, *children}
     while pending:
@@ -206,7 +219,7 @@ def erase_derived_sources_on(store, conn, tenant, source_id):
 
 
 def journal_rows_on(store, conn, tenant):
-    return conn.execute("""SELECT j.*,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc
+    return conn.execute("""SELECT j.*,s.source_kind,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc
         FROM memory_journal j JOIN memory_sources s ON s.id=j.source_id AND s.tenant_id=j.tenant_id
         JOIN memory_source_versions v ON v.source_id=j.source_id AND v.tenant_id=j.tenant_id
         WHERE j.tenant_id=? AND s.deleted_at IS NULL AND j.expires_at>?
@@ -221,7 +234,8 @@ def event_on(store, conn, tenant, row):
             "session_id": metadata.get("session_id", ""), "timezone": metadata.get("timezone", "UTC"),
             "parent_source_id": metadata.get("parent_source_id") or None,
             "parent_source_version": int(metadata["parent_source_version"]) if metadata.get("parent_source_version") else None,
-            "attachments": json.loads(metadata.get("attachments", "[]"))}
+            "attachments": json.loads(metadata.get("attachments", "[]")),
+            "action_receipt": json.loads(metadata["action_receipt"]) if metadata.get("action_receipt") else None}
 
 
 def query_journal(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50,

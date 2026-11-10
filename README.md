@@ -414,6 +414,10 @@ License: [MIT](LICENSE) — Copyright (c) 2026 samohod4ik.
 
 ## Layered memory (0.3)
 
+Bounded evidence review also distinguishes successful tool calls from observed
+effects. Host action receipts and scoped lesson proposals survive new sessions;
+model proposals remain separate from confirmed facts. See the API contract below.
+
 Inspired by [Iva](https://github.com/smixs/iva-agent), [agent-second-brain](https://github.com/smixs/agent-second-brain) and [autograph](https://github.com/smixs/autograph) by **Serge Shima (smixs)**.
 
 Opt-in encrypted event journal, exact source evidence, bounded current-fact core,

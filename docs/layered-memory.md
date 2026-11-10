@@ -172,6 +172,61 @@ publish raw memory into an Obsidian vault or Git without an explicit export.
 
 ## Migration and checks
 
+### Evidence review (dreaming increment)
+
+`record_action_receipt(actor, event_id=..., operation_id=..., tool_name=...,
+environment={"project": ..., "host": ..., "revision": ...}, phase=...,
+outcome=..., summary=..., occurred_at=..., parent_source_id=...,
+parent_source_version=..., policy=..., store=...)` is host-only. The host captures
+the parent binding before executing the action and supplies a sanitized summary;
+raw arguments/results are not accepted fields. `requested`/`started` imply an
+`unknown` outcome. `result` records the tool response; only a separate `observed`
+receipt records an external effect. Outcomes are `unknown`, `succeeded`, `failed`.
+Receipt identity cannot be relabelled to another operation, phase or environment.
+The existing encrypted journal, actor checks, retention and erasure apply.
+Forgetting invalidates in-flight tool output and conservatively removes stored
+tool-derived output that may contain recalled information.
+
+The existing `consolidate_period` generates mechanical operation assessments for
+free. An optional adapter receives direct user originals, assistant statements
+and structured receipts; it may propose `reviews` in addition to selected facts
+and exact-span candidates. An assessment has `kind="assessment"`, `environment`,
+`evidence=[{"source_id":...,"source_version":...}]`, `verdict` (supported,
+contradicted, conflicting, insufficient), and `summary`. A lesson instead has
+`kind="lesson"`, the same environment/evidence, `condition`, `failed_approach`
+and `successful_action`. A lesson needs a failed-action receipt and separately
+observed success in that environment. Evidence references and necessary outcome
+conditions are checked; this is **not proof of semantic correctness or causality**.
+All model reviews retain `state="candidate"`, never rewrite confirmed facts,
+and never become commands or permissions. Missing evidence is not disproof.
+
+`recall_reviews(actor, environment=..., query="", limit=5, store=...)` retrieves
+current observations/proposals separately from core facts. Exact host/project/
+revision matching prevents an old environment's lesson being applied silently.
+Source changes or forgetting invalidate projections; a new session can retrieve
+the same still-valid evidence. Hosts should present the authority label and
+source references with results, and reserve space in their total context budget.
+
+Review uses the existing single-writer leases, fingerprint checks and one-call
+budget. An unchanged completed batch costs zero model calls. Receipt assessments
+and proposals share the bounded projection output budget; truncation is explicit.
+Candidate lessons and assessments take precedence over repetitive operation
+summaries in storage and retrieval. The free path opens tool receipts only;
+optional model input is admitted by encrypted byte size before decryption, with
+at most 64 events and 64 KiB per batch. Selected/omitted event counts accompany
+the request and projection. Partial receipt batches report insufficient evidence,
+not an exhaustive operation verdict; omitted originals are not silently reviewed.
+The review-format revision invalidates old projections once. There is no automatic
+retry after uncertain paid work and no bundled provider, wiki agent or scheduler.
+Hosts run ticks outside active foreground work and enforce provider cancellation.
+Actual model quality, task success and total foreground plus background cost need
+a separate same-model comparison; scripted fixtures only verify these mechanisms.
+
+The evidence-review design is informed by Lance Martin / Anthropic,
+[Components of agent memory](https://www.anthropic.com/research/components-of-agent-memory),
+and the earlier [Sleep-time Compute](https://arxiv.org/abs/2504.13171) research.
+The layered-memory architecture retains the Iva / Serge Shima attribution above.
+
 Opening a v1–v5 store upgrades it transactionally to v6. Existing sources, keys
 and claims remain. Before upgrading a real store, take a consistent SQLite
 backup and retain its existing key. Reverting to old code requires restoring

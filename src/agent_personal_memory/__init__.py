@@ -14,6 +14,7 @@ non-authorizing, the nonce exists only inside an operator-delivered
 
 from __future__ import annotations
 
+from .dreaming import record_action_receipt, recall_reviews
 from .assembler import assemble_context
 from .journal import CapturePolicy, record_turn, get_journal_event, query_journal, remember_from_evidence, evidence_for_claim, prune_journal, correct_from_evidence
 from .layered import build_core, recall, link_memories, export_markdown
@@ -140,6 +141,7 @@ __version__ = "0.3.0"
 create_candidate = PersonalMemoryStore.create_candidate
 
 __all__ = (
+    "record_action_receipt", "recall_reviews",
     "CapturePolicy", "record_turn", "get_journal_event", "query_journal", "remember_from_evidence", "evidence_for_claim", "prune_journal", "correct_from_evidence",
     "build_core", "recall", "link_memories", "export_markdown", "ConsolidationBudget", "consolidate_period", "pending_periods", "mark_capture_complete",
     "ACCEPT_MEMORY_RECONCILIATION_SCHEMA",

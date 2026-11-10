@@ -7,6 +7,7 @@
 - Add transactional schema v6 upgrade; old-code rollback needs the matching previous DB backup.
 - Add Windows tzdata dependency; retain optional plaintext FTS caveat.
 - Credit Iva, agent-second-brain and autograph by Serge Shima (smixs).
+- Add scoped host action receipts, bounded evidence-review proposals and fresh-session review retrieval. Distinguish call success from observed effect; reuse source versions, erasure and consolidation budgets without a new scheduler or provider dependency.
 
 
 All notable changes to this project will be documented in this file.
