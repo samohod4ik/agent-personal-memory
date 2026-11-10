@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 — layered memory
+
+- Add opt-in versioned journal, exact evidence, bounded core/recall, period hierarchy, guarded consolidation and Markdown export.
+- Preserve original-source lineage and erase targeted spans/projections through existing trusted deletion.
+- Add transactional schema v6 upgrade; old-code rollback needs the matching previous DB backup.
+- Add Windows tzdata dependency; retain optional plaintext FTS caveat.
+- Credit Iva, agent-second-brain and autograph by Serge Shima (smixs).
+- Add scoped host action receipts, bounded evidence-review proposals and fresh-session review retrieval. Distinguish call success from observed effect; reuse source versions, erasure and consolidation budgets without a new scheduler or provider dependency.
+
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

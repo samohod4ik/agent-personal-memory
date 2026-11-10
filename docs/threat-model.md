@@ -1,6 +1,6 @@
 # Threat model — agent-personal-memory
 
-Scope: the `agent_personal_memory` Python package (v0.2.0) and its optional
+Scope: the `agent_personal_memory` Python package (v0.3.0) and its optional
 MCP stdio server. This document describes what the shipped controls do —
 and, just as importantly, what they do not do. Companion documents:
 [adr/0002-core-boundary.md](adr/0002-core-boundary.md) (extraction
@@ -222,3 +222,14 @@ secret file (0600-equivalent custody).
 - **Erasure ≠ legal-grade guaranteed destruction.** It is a strong
   crypto-shredding + physical-deletion implementation with explicit
   backup/OS-copy caveats, as enumerated above.
+
+## Layered-memory addition (0.3)
+
+New journal capture is explicit and host-only. Identity, role and origin must be
+set after host authentication; none is a model tool selector. Exact spans are
+data, never instructions. Core uses current confirmed nonrestricted facts;
+forwarded/assistant/derived events cannot be promoted as direct owner facts.
+Projection bodies use wrapped DEKs; optional FTS remains plaintext.
+[Layered contract](layered-memory.md) describes bounded source opening, event
+tombstones, span erasure, uncertain paid-call outcomes, retention and the limits
+of semantic redaction, external exports and old backups.

@@ -58,6 +58,15 @@ another tenant's snapshot.
 
 ---
 
+### Explicit original opening (#6)
+
+Ordinary layered recall retains this pointer rule. `evidence_for_claim` and
+`recall(include_journal=True)` are separate explicit owner/host-authorized
+operations: exact current source spans, actor checks, bounded text and provenance
+are required. They do not authorize dumping entire chats into normal recall.
+The fixed `layered_bench.py` measures mechanisms against an independent v0.2
+checkout; it does not measure real-model extraction or semantic answer quality.
+
 ## 2. Honest-zero is not green Recall@k
 
 When the authorized set is empty, the correct score is an **honest zero**
