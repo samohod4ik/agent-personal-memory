@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
 
@@ -471,7 +472,7 @@ class LayeredMemoryTests(unittest.TestCase):
     def test_migration_and_encrypted_projection_storage(self):
         event, _ = self.fact("A very unique private memory phrase.")
         self.run_period()
-        with self.store._connect() as conn:
+        with closing(self.store._connect()) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.assertNotIn(b"unique private memory", Path(self.store.db_path).read_bytes())
         self.assertNotIn(b"unique private memory", Path(self.store.key_path).read_bytes())
@@ -482,7 +483,7 @@ class LayeredMemoryTests(unittest.TestCase):
             conn.execute("UPDATE memory_schema SET version=5")
         reopened = apm.PersonalMemoryStore(self.tmp.name)
         self.assertEqual(reopened.get_source(ALICE, event["source_id"])["snapshot"], b"A very unique private memory phrase.")
-        with reopened._connect() as conn:
+        with closing(reopened._connect()) as conn:
             self.assertEqual(conn.execute("SELECT version FROM memory_schema").fetchone()[0], 6)
 
 
