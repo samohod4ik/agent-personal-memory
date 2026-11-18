@@ -8,8 +8,9 @@ from agent_personal_memory.consolidation import valid_projections
 
 class ConsolidationRecoveryTests(unittest.TestCase):
     def setUp(self):
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        self.store = apm.PersonalMemoryStore(directory)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.store = apm.PersonalMemoryStore(directory.name)
         self.actor = apm.Actor("test", "recovery")
         self.budget = apm.ConsolidationBudget(max_input_tokens=65536)
         self.calls = 0
