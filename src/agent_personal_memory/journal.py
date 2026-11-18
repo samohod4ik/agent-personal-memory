@@ -64,7 +64,10 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 timezone: str = "UTC", role: str = "user", origin: str = "direct",
                 session_id: str = "", attachments: tuple[str, ...] = (),
                 parent_source_id: str | None = None, parent_source_version: int | None = None,
-                policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None) -> dict:
+                policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None,
+                reconcile: bool = False) -> dict:
+    if type(reconcile) is not bool:
+        raise ValidationError("reconcile: boolean required")
     if not isinstance(policy, CapturePolicy):
         raise ValidationError("policy: CapturePolicy required")
     if not policy.enabled:
@@ -104,7 +107,7 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
         raise ValidationError("occurred_at: future event")
     occurred_at = occurred.strftime("%Y-%m-%dT%H:%M:%SZ")
     expires = (occurred + timedelta(days=policy.retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if expires <= utcnow_iso():
+    if not reconcile and expires <= utcnow_iso():
         return {"status": "skipped", "reason": "expired"}
     metadata = {"title": "Original event", "role": role, "origin": origin, "timezone": timezone,
                 "session_id": session_id, "attachments": json.dumps(list(attachments), ensure_ascii=False),
@@ -118,6 +121,19 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
         row = conn.execute("SELECT * FROM memory_journal WHERE tenant_id=? AND event_hash=?", (tenant, event_hash)).fetchone()
         if row and row["redacted"]:
             return {"status": "forgotten"}
+        if reconcile and row:
+            if row["expires_at"] <= utcnow_iso():
+                return {"status": "skipped", "reason": "expired"}
+            old = store._newest_active_version(conn, tenant, row["source_id"])
+            if old is None:
+                return {"status": "forgotten"}
+            old_text, _, old_metadata = store._decrypt_version(conn, tenant, row["source_id"], old)
+            if (old_text.decode("utf-8"), old_metadata.get("role"), old_metadata.get("origin"),
+                    old_metadata.get("session_id", "")) != (text, role, origin, session_id):
+                return {"status": "skipped", "reason": "reconcile_existing_event"}
+            return {"status": "replayed", "source_id": row["source_id"], "version": old["version"], "source_version_id": old["id"]}
+        if expires <= utcnow_iso():
+            return {"status": "skipped", "reason": "expired"}
         if parent_source_id is not None:
             parent = conn.execute("SELECT * FROM memory_journal WHERE tenant_id=? AND source_id=? AND redacted=0 AND expires_at>?", (tenant, parent_source_id, utcnow_iso())).fetchone()
             active = store._newest_active_version(conn, tenant, parent_source_id) if parent else None

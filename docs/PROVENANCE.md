@@ -547,6 +547,9 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
 | `src/agent_personal_memory/dreaming.py` | — | — | added | Original host receipts, review validation and scoped retrieval |
 | `tests/test_dreaming.py` | — | — | added | Original evidence, erasure and budget regressions |
 | `tests/test_layered_memory.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `tests/test_consolidation_recovery.py` | — | — | added | Original scheduling and provider outcome regressions from the BB pilot |
+| `tests/test_erasure_impact.py` | — | — | added | Original erasure scope and confirmation regressions from the BB pilot |
+| `tests/test_journal_reconciliation.py` | — | — | added | Original replay and capture lineage regressions from the BB pilot |
 | `bench/layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `bench/test_layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `docs/layered-memory.md` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |

@@ -64,6 +64,12 @@ it is conservative syntax validation, not a proof that the owner is truthful.
 | `export_markdown` | Explicit owner projection as a string with source links. No automatic file creation, Git or network upload. |
 | `prune_journal` | Delete expired events/derived facts; optional UTC `now` for a host clock/test. Returns expired count. Host schedules this. |
 
+Use `record_turn(..., reconcile=True)` when replaying a host timeline. Missing
+events are inserted. Matching events keep their original timestamps, versions
+and lineage. Conflicting entries are skipped with `reconcile_existing_event`.
+The ordinary ingest path still accepts trusted source revisions. Changes to
+an existing capture timestamp are preserved as observed in reconciliation.
+
 Token counts are conservative text estimates for context selection, not the
 provider's full serialized prompt count. Provenance objects are references for
 host rendering and should not all be serialized into a second model prompt.
@@ -104,6 +110,8 @@ worker must not invent this attestation. Late arrivals invalidate it. Today's or
 periods first. A finite host tick processes these and stops; completed unchanged
 periods disappear from the list. Late arrivals, edits, corrections, erasure and
 retention invalidate affected version fingerprints. No scheduler is installed.
+Schedulers can pass `closed_only=True` (with optional UTC-aware `as_of`) to
+filter before the limit and defer a period with an open intersecting child.
 
 The default adapter-free projection selects exact current confirmed statements,
 with no network or model cost. `ConsolidationBudget(max_calls=1,
@@ -132,6 +140,20 @@ Changed inputs can proceed. The original error/prompt is not persisted. This
 avoids an infinite paid retry loop; a host needing an explicit retry should make
 a deliberate new admission after resolving the provider outcome.
 
+With `recover_extractive=True` and no adapter, a host can write a local
+projection for the same failed input while retaining the previous admission.
+A failed model upgrade also updates the attempt receipt of a cached local projection.
+A live lease defers recovery. Changed input returns `recovery_input_changed`.
+With `include_extractive=True` in discovery and `upgrade_extractive=True`
+in consolidation, eligible local projections can explicitly receive their
+first judgment. An existing admission still protects against automatic repeat
+calls. If an upgrade was interrupted, discovery lists the period until the
+host refreshes the local recovery receipt. `projection.method` reports
+`extractive` or `judged`. Responses report
+the model attempt separately from projection status, including the validation
+stage for rejected structured output. A trusted adapter can raise
+`ConsolidationNotStarted` only when it knows the provider was never invoked.
+
 Statuses: completed (new projection), cached (same inputs, zero calls), pending
 (in-progress/error/uncertain outcome), stale (inputs changed before commit),
 budget_exhausted. Job state and usage persist; no failed result becomes a fact.
@@ -142,6 +164,14 @@ Canonical originals and projections use existing KEK-wrapped per-record DEKs.
 Optional legacy FTS still contains plaintext claim text; enabling it does not
 make the entire SQLite file encrypted. Event identities use actor-bound HMACs.
 Internal IDs, timing and job counters remain structural metadata.
+
+Trusted deletion previews show the actor's generated-history purge and bind
+the current impact. Host-only source deletion adapters can read
+`store.preview_erasure_impact(actor, claim_ids=..., source_ids=...)` for the
+selected roots and require the reviewed fingerprint in
+`erase_bound_memory(..., require_impact_ack=True, impact_fingerprint=...)`.
+The store checks the fingerprint in the deletion transaction. Changed scope
+requires a fresh preview.
 
 Core is rebuilt from current facts. A correction invalidates old summaries and
 links by version; old exact evidence is not presented as proof of the corrected

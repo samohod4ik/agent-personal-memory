@@ -18,7 +18,7 @@ from .dreaming import record_action_receipt, recall_reviews
 from .assembler import assemble_context
 from .journal import CapturePolicy, record_turn, get_journal_event, query_journal, remember_from_evidence, evidence_for_claim, prune_journal, correct_from_evidence
 from .layered import build_core, recall, link_memories, export_markdown
-from .consolidation import ConsolidationBudget, consolidate_period, pending_periods, mark_capture_complete
+from .consolidation import ConsolidationBudget, ConsolidationNotStarted, consolidate_period, pending_periods, mark_capture_complete
 from .confirmation import (
     REGISTRY as CONFIRM_REGISTRY,
     BoundTarget,
@@ -123,6 +123,7 @@ from .schemas import (
 from .score_locality import apply_snippet_acl, bm25_scores, score_locality
 from .store import (
     ConflictError,
+    ErasureImpact,
     NotFoundError,
     PersonalMemoryStore,
     SchemaVersionError,
@@ -151,6 +152,7 @@ __all__ = (
     "CONFIRM_REGISTRY",
     "Candidate",
     "ConflictError",
+    "ConsolidationNotStarted",
     "CONFIRM_CANDIDATE_MEMORY_SCHEMA",
     "ConfirmNonce",
     "ConflictJudge",
@@ -159,6 +161,7 @@ __all__ = (
     "DeleteRegistry",
     "DeleteRequest",
     "EngineResult",
+    "ErasureImpact",
     "ErasureReceipt",
     "EXPLAIN_CLAIM_SCHEMA",
     "EXPLAIN_WHY_REMEMBERED_SCHEMA",
