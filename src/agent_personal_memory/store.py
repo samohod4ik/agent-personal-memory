@@ -312,6 +312,7 @@ AUDIT_ACTIONS = frozenset(
         "claim.link_accept",
         "claim.link_reject",
         "claim.retract",
+        "claim.supersede",
         "claim.history",
     }
 )
@@ -354,6 +355,7 @@ AUDIT_REASONS = frozenset(
         "content_changed",
         "confirmation_required",
         "invalid_transition",
+        "auto_core_reply_length",
     }
 )
 
@@ -1620,6 +1622,8 @@ class PersonalMemoryStore:
         newest: sqlite3.Row,
         support_ids: list[str],
         change_reason: str = "promoted",
+        expires_at: str | None = None,
+        policy_reason: str = "",
     ) -> dict[str, object]:
         """Confirm a candidate claim inside an open transaction.
 
@@ -1651,7 +1655,7 @@ class PersonalMemoryStore:
             explanation=explanation,
             valid_from=newest["valid_from"],
             valid_to=newest["valid_to"],
-            expires_at=None,
+            expires_at=expires_at,
             supersedes_id=previous_id,
             now=now,
             change_reason=change_reason,
@@ -1673,7 +1677,7 @@ class PersonalMemoryStore:
             target_kind="claim_version",
             target_id=version_id,
             outcome="confirmed",
-            policy_reason="",
+            policy_reason=policy_reason,
         )
         self._sync_claim_fts_on(
             conn,
@@ -1692,7 +1696,7 @@ class PersonalMemoryStore:
             state=MemoryState.CONFIRMED,
             sensitivity=str(newest["sensitivity"]),
             confidence=float(newest["confidence"]),
-            expires_at=None,
+            expires_at=expires_at,
             created_at=now,
             supersedes_id=previous_id,
         )

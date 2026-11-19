@@ -65,9 +65,11 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 session_id: str = "", attachments: tuple[str, ...] = (),
                 parent_source_id: str | None = None, parent_source_version: int | None = None,
                 policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None,
-                reconcile: bool = False) -> dict:
+                reconcile: bool = False, whole_owner_turn: bool = False) -> dict:
     if type(reconcile) is not bool:
         raise ValidationError("reconcile: boolean required")
+    if type(whole_owner_turn) is not bool or (whole_owner_turn and (role != "user" or origin != "direct")):
+        raise ValidationError("whole_owner_turn: direct owner capture attestation required")
     if not isinstance(policy, CapturePolicy):
         raise ValidationError("policy: CapturePolicy required")
     if not policy.enabled:
@@ -114,6 +116,8 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 "parent_source_id": parent_source_id or "", "parent_source_version": str(parent_source_version or "")}
     if action_receipt is not None:
         metadata["action_receipt"] = json.dumps(action_receipt, ensure_ascii=False, sort_keys=True)
+    if whole_owner_turn:
+        metadata["whole_owner_turn"] = "1"
     envelope = hashlib.sha256(encode([text, metadata, occurred_at, expires])).hexdigest()
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
@@ -128,6 +132,9 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
             if old is None:
                 return {"status": "forgotten"}
             old_text, _, old_metadata = store._decrypt_version(conn, tenant, row["source_id"], old)
+            if old_metadata.get("whole_owner_turn") == "1" and (
+                    not whole_owner_turn or old_metadata.get("attachments") != metadata["attachments"]):
+                return {"status": "skipped", "reason": "reconcile_existing_event"}
             if (old_text.decode("utf-8"), old_metadata.get("role"), old_metadata.get("origin"),
                     old_metadata.get("session_id", "")) != (text, role, origin, session_id):
                 return {"status": "skipped", "reason": "reconcile_existing_event"}
@@ -256,6 +263,7 @@ def event_on(store, conn, tenant, row):
             "parent_source_id": metadata.get("parent_source_id") or None,
             "parent_source_version": int(metadata["parent_source_version"]) if metadata.get("parent_source_version") else None,
             "attachments": json.loads(metadata.get("attachments", "[]")),
+            **({"whole_owner_turn": True} if metadata.get("whole_owner_turn") == "1" else {}),
             "action_receipt": json.loads(metadata["action_receipt"]) if metadata.get("action_receipt") else None}
 
 
@@ -287,13 +295,13 @@ def query_journal(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50,
     return {"items": items, "next_cursor": last if more else None}
 
 
-def _evidence_source_on(store, conn, tenant, source_id, source_version, start, end):
+def _evidence_source_on(store, conn, tenant, source_id, source_version, start, end, *, require_unredacted=False):
     row = conn.execute("""SELECT j.*,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc
         FROM memory_journal j JOIN memory_source_versions v ON v.source_id=j.source_id AND v.tenant_id=j.tenant_id
         JOIN memory_sources s ON s.id=j.source_id WHERE j.tenant_id=? AND j.source_id=? AND v.version=?
-        AND j.expires_at>? AND v.deletion_state='active' AND s.deleted_at IS NULL
+        AND j.expires_at>? AND (j.redacted=0 OR NOT ?) AND v.deletion_state='active' AND s.deleted_at IS NULL
         AND v.version=(SELECT MAX(x.version) FROM memory_source_versions x WHERE x.source_id=j.source_id)""",
-        (tenant, source_id, source_version, utcnow_iso())).fetchone()
+        (tenant, source_id, source_version, utcnow_iso(), require_unredacted)).fetchone()
     if row is None:
         raise NotFoundError("Evidence not found")
     event = event_on(store, conn, tenant, row)

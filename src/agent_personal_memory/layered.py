@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import uuid
 
+from .auto_core import REPLY_LENGTH_POLICY, latest_reply_length_on, reply_length
 from .journal import _evidence_source_on, evidence_for_claim, query_journal
 from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
 from .text_norm import query_terms, tokenize
@@ -11,7 +12,7 @@ from .types import Actor
 from .validation import ValidationError
 
 
-def current_claims_on(store, conn, tenant):
+def current_claims_on(store, conn, tenant, *, include_auto_core=True):
     """All authorized current facts, not an arbitrary recent-500 window."""
     now = utcnow_iso()
     rows = conn.execute("""SELECT c.id AS claim_id,c.claim_kind,v.* FROM memory_claims c
@@ -21,14 +22,39 @@ def current_claims_on(store, conn, tenant):
         AND (v.valid_from IS NULL OR v.valid_from<=?) AND (v.valid_to IS NULL OR v.valid_to>?)
         AND v.version=(SELECT MAX(x.version) FROM memory_claim_versions x WHERE x.claim_id=c.id)
         ORDER BY v.created_at DESC,c.id""", (tenant, now, now, now)).fetchall()
-    out = []
+    out, automatic = [], []
     for row in rows:
+        is_auto = row["change_reason"] == REPLY_LENGTH_POLICY
+        if is_auto and not include_auto_core:
+            continue
         content, _ = store._decrypt_claim_fields(conn, tenant_id=tenant, claim_id=row["claim_id"], version_row=row)
         evidence = [dict(r) for r in conn.execute("SELECT source_id,source_version,span_start,span_end FROM memory_evidence WHERE tenant_id=? AND claim_id=? AND claim_version=?", (tenant, row["claim_id"], row["version"]))]
-        out.append({"claim_id": row["claim_id"], "version": row["version"], "claim_kind": row["claim_kind"],
-                    "state": "confirmed", "content": content.decode("utf-8"), "created_at": row["created_at"],
-                    "evidence": evidence})
-    return out
+        item = {"claim_id": row["claim_id"], "version": row["version"], "claim_kind": row["claim_kind"],
+                "state": "confirmed", "content": content.decode("utf-8"), "created_at": row["created_at"],
+                "evidence": evidence}
+        (automatic if is_auto else out).append(item)
+    if out or not automatic:
+        # Confirmed free-form facts have no typed conflict boundary.
+        return out
+    latest = latest_reply_length_on(store, conn, tenant)
+    if latest is None or latest[1] is None:
+        return out
+    for item in automatic:
+        if reply_length(item["content"]) != latest[1] or len(item["evidence"]) != 1:
+            continue
+        proof = item["evidence"][0]
+        try:
+            event, quote = _evidence_source_on(
+                store, conn, tenant, proof["source_id"], proof["source_version"],
+                proof["span_start"], proof["span_end"], require_unredacted=True,
+            )
+        except (NotFoundError, ValidationError):
+            continue
+        if (event.get("whole_owner_turn") and event["occurred_at"] == latest[0] and event["role"] == "user"
+                and event["origin"] == "direct" and not event["attachments"]
+                and quote == event["text"] == item["content"]):
+            return [item]
+    return []
 
 
 def _claims(actor, store):

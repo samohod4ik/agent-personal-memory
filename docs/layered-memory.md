@@ -275,3 +275,23 @@ recall, exact original, foreign actor, unknown query and forgotten source span.
 It reports context estimates, zero model calls and measured latency. These are
 mechanism tests, not a claim about real-model extraction quality or Windows
 service integration. No live-model acceptance was performed for this change.
+
+### Automatic promotion of global reply-length preferences
+
+A trusted host can opt into the day-judge pilot with `consolidate_period(..., auto_core=True)`.
+The default library behavior creates candidates. In `auto_insight` mode the pilot
+recognizes six explicit Russian and English statements about reply length in all
+chats. For example, “I prefer brief replies in all chats.” A successful judge
+must select the complete direct owner turn. A trusted capture client explicitly
+attests its provenance with `record_turn(..., whole_owner_turn=True)`. Earlier
+captures without that attestation remain eligible for candidate extraction only.
+The writer verifies the original
+again and records the confirmed preference, its exact source version and span,
+and the policy identifier `auto_core_reply_length` in one transaction.
+
+A newer eligible assertion immediately withholds the previous preference from
+core and recall until a daily judgment confirms its replacement. Conflicting
+values at the same timestamp leave the slot empty. The confirmation expires
+with its journal evidence. Imported, contextual and attached turns remain
+ineligible. Current free-form confirmations take precedence over the entire
+pilot slot because the store has no reliable scope information for those facts.

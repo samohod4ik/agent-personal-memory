@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as day_time, timedelta, timezone as utc
 from typing import Callable
 
+from .auto_core import promote_reply_length_on
 from .dreaming import operation_assessments, validate_reviews
 from .journal import journal_rows_on, event_on, stamp, zone, validate_statement_on, candidate_from_evidence_on
 from .layered import current_claims_on
 from .layered_store import encode, put_projection, read_projection
-from .store import PersonalMemoryStore, utcnow_iso
+from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
 from .types import Actor
 from .validation import ValidationError
 
@@ -167,12 +168,13 @@ def _release_admission(store, tenant, key, owner, fingerprint):
 
 def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str = "UTC", store: PersonalMemoryStore,
                        adapter: Callable[[dict], dict] | None = None, budget: ConsolidationBudget | None = None,
-                       recover_extractive: bool = False, upgrade_extractive: bool = False) -> dict:
+                       recover_extractive: bool = False, upgrade_extractive: bool = False,
+                       auto_core: bool = False) -> dict:
     """Persist a projection, optionally enriching or recovering a local one."""
     budget = budget or ConsolidationBudget()
     if not isinstance(budget, ConsolidationBudget):
         raise ValidationError("budget: ConsolidationBudget required")
-    if (type(recover_extractive) is not bool or type(upgrade_extractive) is not bool
+    if (type(recover_extractive) is not bool or type(upgrade_extractive) is not bool or type(auto_core) is not bool
             or (recover_extractive and adapter is not None) or (upgrade_extractive and adapter is None)):
         raise ValidationError("consolidation: incompatible projection mode")
     beginning = time.monotonic()
@@ -310,6 +312,8 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
         fresh = _input_on(store, conn, tenant, period, start, timezone)
         if lease is None or lease["owner"] != owner or fresh["fingerprint"] != data["fingerprint"]:
             return {"status": "stale", "usage": usage}
+        fingerprint = data["fingerprint"]
+        proof = []
         if status == "completed":
             # All proposals are validated before any are persisted. The same
             # transaction rechecks source versions and applies candidates only.
@@ -322,8 +326,8 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
                         raise ValidationError("proposal: source outside batch")
                     from .validation import validate_claim_kind
                     validate_claim_kind(proposal.get("claim_kind", "candidate_insight"))
-                    validate_statement_on(store, conn, tenant, proposal["source_id"], proposal["source_version"], proposal.get("start"), proposal.get("end"))
-            except (ValidationError, TypeError, KeyError):
+                    proof.append(validate_statement_on(store, conn, tenant, proposal["source_id"], proposal["source_version"], proposal.get("start"), proposal.get("end")))
+            except (ValidationError, NotFoundError, TypeError, KeyError):
                 status, reason = "pending", "invalid_proposal"
                 validation_stage = "evidence"
         model_attempt = {"status": (
@@ -336,11 +340,16 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
         if status == "completed":
             payload["model_attempt"] = model_attempt
             payload["candidates"] = [candidate_from_evidence_on(store, conn, tenant, p) for p in proposals]
+            if (auto_core and period == "day" and store._memory_mode_on(conn, tenant) == "auto_insight"
+                    and promote_reply_length_on(store, conn, tenant, payload["candidates"], proof)):
+                # The payload still describes the actual judged input. Cache
+                # against the period's effective state after its own write.
+                fingerprint = _input_on(store, conn, tenant, period, start, timezone)["fingerprint"]
             put_projection(store, conn, tenant, period=period, start=start, timezone=timezone,
-                           fingerprint=data["fingerprint"], payload=payload, now=utcnow_iso())
+                           fingerprint=fingerprint, payload=payload, now=utcnow_iso())
         recorded = previous_usage if previous_usage["calls"] else usage
-        conn.execute("UPDATE memory_jobs SET state=?,lease_until=0,calls=?,input_tokens=?,output_tokens=? WHERE tenant_id=? AND job_key=? AND owner=?",
-                     (status, *recorded.values(), tenant, key, owner))
+        conn.execute("UPDATE memory_jobs SET state=?,fingerprint=?,lease_until=0,calls=?,input_tokens=?,output_tokens=? WHERE tenant_id=? AND job_key=? AND owner=?",
+                     (status, fingerprint, *recorded.values(), tenant, key, owner))
     result = {"status": status, "usage": usage, "model_attempt": model_attempt}
     if status == "completed":
         result["projection"] = payload
