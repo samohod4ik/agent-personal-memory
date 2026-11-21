@@ -1,9 +1,11 @@
 """Layered memory behavioral, privacy, budget and migration regression tests."""
 import json
+import hashlib
 import sqlite3
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
@@ -163,6 +165,122 @@ class LayeredMemoryTests(unittest.TestCase):
         event, claim = self.fact("I prefer coffee.", "second")
         self.store.correct_claim(ALICE, claim["claim_id"], content=b"I prefer coffee.", explanation="private", source_ids=[event["source_id"]], sensitivity="restricted")
         self.assertEqual(apm.build_core(ALICE, store=self.store)["text"], "")
+
+    def test_evidence_claim_expires_with_source_before_prune(self):
+        observed = datetime.now(timezone.utc).replace(microsecond=0)
+        occurred_at = observed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        event = self.event("I prefer concise replies.", "expiring-evidence",
+                           occurred_at=occurred_at,
+                           policy=apm.CapturePolicy(True, 2))
+        source = apm.get_journal_event(
+            ALICE, event_id="expiring-evidence", store=self.store)
+        self.assertIsNotNone(source)
+        self.assertEqual(source["source_id"], event["source_id"])
+        self.assertEqual(source["expires_at"],
+                         (observed + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+        end = len("I prefer concise replies.")
+        preview = apm.preview_evidence(
+            ALICE, source_id=source["source_id"], source_version=source["version"],
+            start=0, end=end, store=self.store)
+        self.assertEqual(preview["quote_sha256"],
+                         hashlib.sha256(
+                             "I prefer concise replies.".encode()).hexdigest())
+        self.assertNotIn("quote", preview)
+        self.assertIsNone(preview["existing_claim"])
+        self.assertFalse(preview["overlap"])
+
+        self.store.set_memory_mode(ALICE, "auto_insight")
+        claim = apm.remember_from_evidence(
+            ALICE, source_id=source["source_id"], source_version=source["version"],
+            start=0, end=end, claim_kind="preference",
+            bind_to_source_lifetime=True, store=self.store)
+        self.assertEqual(claim["state"], "confirmed")
+        self.assertEqual(claim["expires_at"], source["expires_at"])
+        self.assertEqual(apm.build_core(ALICE, store=self.store)["text"],
+                         "- I prefer concise replies.")
+        replay = apm.remember_from_evidence(
+            ALICE, source_id=source["source_id"], source_version=source["version"],
+            start=0, end=end, claim_kind="preference",
+            bind_to_source_lifetime=True, store=self.store)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["claim_id"], claim["claim_id"])
+        self.assertEqual(replay["state"], "confirmed")
+        after = apm.preview_evidence(
+            ALICE, source_id=source["source_id"], source_version=source["version"],
+            start=0, end=end, store=self.store)
+        self.assertEqual(after["existing_claim"]["claim_id"], claim["claim_id"])
+        self.assertFalse(after["overlap"])
+
+        expired = "2099-01-01T00:00:00Z"
+        with patch("agent_personal_memory.layered.utcnow_iso", return_value=expired), \
+             patch("agent_personal_memory.query.utcnow_iso", return_value=expired):
+            self.assertEqual(apm.build_core(ALICE, store=self.store)["text"], "")
+            self.assertEqual(apm.query_claims(
+                ALICE, states=["confirmed"], include_content=False,
+                store=self.store), [])
+
+    def test_evidence_expiry_guard_blocks_late_confirmation(self):
+        observed = datetime.now(timezone.utc).replace(microsecond=0)
+        event = self.event("I prefer concise replies.", "late-confirm",
+                           occurred_at=observed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           policy=apm.CapturePolicy(True, 2))
+        source = apm.get_journal_event(
+            ALICE, event_id="late-confirm", store=self.store)
+        self.store.create_candidate(
+            ALICE, claim_kind="preference", content=b"I prefer concise replies.",
+            confidence=0.9, explanation="test candidate", sensitivity="normal",
+            source_ids=[source["source_id"]], expires_at=source["expires_at"])
+        claim = apm.query_claims(ALICE, states=["candidate"],
+                                 include_content=False, store=self.store)[0]
+        self.store.set_memory_mode(ALICE, "auto_insight")
+        with patch("agent_personal_memory.store.utcnow_iso",
+                   return_value="2099-01-01T00:00:00Z"):
+            with self.assertRaisesRegex(apm.ValidationError, "expired before confirmation"):
+                self.store.confirm_claim(
+                    ALICE, claim["claim_id"], reliable_source_id=source["source_id"],
+                    _expires_at=source["expires_at"])
+        self.assertEqual(apm.build_core(ALICE, store=self.store)["text"], "")
+
+    def test_source_lifetime_opt_in_refuses_manual_mode_and_conflicts(self):
+        first = self.event("I prefer tea.", "lifetime-manual")
+        self.store.set_memory_mode(ALICE, "confirm_required")
+        with self.assertRaisesRegex(apm.ValidationError, "requires auto_insight mode"):
+            apm.remember_from_evidence(
+                ALICE, source_id=first["source_id"], source_version=1,
+                start=0, end=len("I prefer tea."),
+                bind_to_source_lifetime=True, store=self.store)
+        self.assertEqual(apm.query_claims(
+            ALICE, states=["candidate", "confirmed"], include_content=False,
+            store=self.store), [])
+
+        self.store.set_memory_mode(ALICE, "auto_insight")
+        old = self.event("I live in Vancouver.", "lifetime-conflict-old")
+        apm.remember_from_evidence(
+            ALICE, source_id=old["source_id"], source_version=1,
+            start=0, end=len("I live in Vancouver."), store=self.store)
+        new = self.event("I live in Toronto.", "lifetime-conflict-new")
+        with self.assertRaisesRegex(apm.ValidationError, "refuses current memory conflicts"):
+            apm.remember_from_evidence(
+                ALICE, source_id=new["source_id"], source_version=1,
+                start=0, end=len("I live in Toronto."),
+                bind_to_source_lifetime=True, store=self.store)
+        states = apm.query_claims(
+            ALICE, states=["candidate", "confirmed"], include_content=False,
+            store=self.store)
+        self.assertEqual([item["state"] for item in states], ["confirmed"])
+
+    def test_default_evidence_lifetime_remains_unchanged(self):
+        observed = datetime.now(timezone.utc).replace(microsecond=0)
+        event = self.event("I prefer tea.", "legacy-evidence-lifetime",
+                           occurred_at=observed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           policy=apm.CapturePolicy(True, 2))
+        self.store.set_memory_mode(ALICE, "auto_insight")
+        claim = apm.remember_from_evidence(
+            ALICE, source_id=event["source_id"], source_version=1,
+            start=0, end=len("I prefer tea."), store=self.store)
+        self.assertEqual(claim["state"], "confirmed")
+        self.assertIsNone(claim["expires_at"])
 
     def test_edit_revokes_old_claim_and_projection(self):
         event, claim = self.fact()

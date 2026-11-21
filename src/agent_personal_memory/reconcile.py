@@ -160,17 +160,44 @@ def propose_reconciliations(
     new_row = get_authorized_claim(
         actor, claim_id, include_content=True, store=memory
     )
-    rows = query_claims(
-        actor, include_content=True, limit=500, store=memory
-    )
     new_text = _as_text(new_row.get("content"))
+    selected = _contradicting_confirmed_claims(
+        actor, new_text, judge=arbiter, store=memory,
+        exclude_claim_id=claim_id)
+    results: list[dict[str, object]] = []
+    for row in selected:
+        try:
+            link = memory.create_claim_link(
+                actor,
+                from_claim_id=claim_id,
+                to_claim_id=str(row["claim_id"]),
+                origin=arbiter.judge_id,
+            )
+        except (NotFoundError, ValidationError):
+            continue
+        results.append(_result_item(link, claim_id, str(row["claim_id"])))
+    return results
+
+
+def _contradicting_confirmed_claims(
+    actor: Actor,
+    new_text: str,
+    *,
+    judge: ConflictJudge,
+    store: PersonalMemoryStore,
+    exclude_claim_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Read-only selection shared by preview and persistent reconciliation."""
+    rows = query_claims(
+        actor, include_content=True, limit=500, store=store
+    )
     new_slot = slot_of(new_text)
     new_stems = _content_stems(new_text)
     confirmed = [
         row
         for row in rows
         if str(row["state"]) == MemoryState.CONFIRMED.value
-        and str(row["claim_id"]) != claim_id
+        and str(row["claim_id"]) != exclude_claim_id
     ]
     if new_slot is not None:
         same_slot = [
@@ -191,22 +218,26 @@ def propose_reconciliations(
             scored_rest.append((-overlap, row))
     scored_rest.sort(key=lambda item: item[0])
     selected = (same_slot + [row for _, row in scored_rest])[:_CANDIDATE_BUDGET]
-    results: list[dict[str, object]] = []
+    conflicts: list[dict[str, object]] = []
     for row in selected:
         old_text = _as_text(row.get("content"))
-        if arbiter.judge(new_text, old_text) != Relation.CONTRADICTS:
-            continue
-        try:
-            link = memory.create_claim_link(
-                actor,
-                from_claim_id=claim_id,
-                to_claim_id=str(row["claim_id"]),
-                origin=arbiter.judge_id,
-            )
-        except (NotFoundError, ValidationError):
-            continue
-        results.append(_result_item(link, claim_id, str(row["claim_id"])))
-    return results
+        if judge.judge(new_text, old_text) == Relation.CONTRADICTS:
+            conflicts.append(row)
+    return conflicts
+
+
+def preview_reconciliation_conflicts(
+    actor: Actor,
+    new_text: str,
+    *,
+    judge: ConflictJudge | None = None,
+    store: PersonalMemoryStore,
+) -> list[str]:
+    """Return conflicting current claim IDs without creating claims or links."""
+    arbiter: ConflictJudge = judge if judge is not None else DEFAULT_JUDGE
+    rows = _contradicting_confirmed_claims(
+        actor, new_text, judge=arbiter, store=store)
+    return [str(row["claim_id"]) for row in rows]
 
 
 def propose_reconciliation(

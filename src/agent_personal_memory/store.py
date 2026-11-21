@@ -354,6 +354,7 @@ AUDIT_REASONS = frozenset(
         "idempotent_replay",
         "content_changed",
         "confirmation_required",
+        "evidence_expired",
         "invalid_transition",
         "auto_core_reply_length",
     }
@@ -1562,6 +1563,7 @@ class PersonalMemoryStore:
         *,
         confirmation_source_id: str | None = None,
         reliable_source_id: str | None = None,
+        _expires_at: str | None = None,
     ) -> dict[str, object]:
         pending_error: Exception | None = None
         with self._tx() as conn:
@@ -1581,6 +1583,16 @@ class PersonalMemoryStore:
                     policy_reason="invalid_transition",
                 )
                 pending_error = ValidationError("claim: invalid transition")
+            elif _expires_at is not None and (
+                newest["expires_at"] != _expires_at or _expires_at <= utcnow_iso()
+            ):
+                self._reject_claim(
+                    conn,
+                    tenant_id=tenant_id,
+                    action="claim.confirm",
+                    policy_reason="evidence_expired",
+                )
+                pending_error = ValidationError("evidence: expired before confirmation")
             else:
                 try:
                     support_ids = self._resolve_confirmation_sources(
@@ -1610,6 +1622,7 @@ class PersonalMemoryStore:
                         claim_row=claim_row,
                         newest=newest,
                         support_ids=support_ids,
+                        expires_at=_expires_at,
                     )
         raise pending_error
 

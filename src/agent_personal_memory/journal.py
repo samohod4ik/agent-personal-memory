@@ -208,14 +208,14 @@ def get_journal_event(actor: Actor, *, event_id: str, store: PersonalMemoryStore
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
         event_hash = keyed_lookup_hash(derive_lookup_key(store._kek), tenant, "journal", event_id)
-        row = conn.execute("SELECT source_id,occurred_at FROM memory_journal WHERE tenant_id=? AND event_hash=? AND redacted=0 AND expires_at>?", (tenant, event_hash, utcnow_iso())).fetchone()
+        row = conn.execute("SELECT source_id,occurred_at,expires_at FROM memory_journal WHERE tenant_id=? AND event_hash=? AND redacted=0 AND expires_at>?", (tenant, event_hash, utcnow_iso())).fetchone()
         if row is None:
             return None
         active = store._newest_active_version(conn, tenant, row["source_id"])
         if active is None:
             return None
         capture = conn.execute("SELECT generation FROM memory_capture_generation WHERE tenant_id=? AND source_id=?", (tenant, row["source_id"])).fetchone()
-        return {"source_id": row["source_id"], "version": active["version"], "source_version_id": active["id"], "occurred_at": row["occurred_at"], "generation": capture[0] if capture else None}
+        return {"source_id": row["source_id"], "version": active["version"], "source_version_id": active["id"], "occurred_at": row["occurred_at"], "expires_at": row["expires_at"], "generation": capture[0] if capture else None}
 
 
 def erase_derived_sources_on(store, conn, tenant, source_id):
@@ -258,6 +258,7 @@ def journal_rows_on(store, conn, tenant):
 def event_on(store, conn, tenant, row):
     text, _, metadata = store._decrypt_version(conn, tenant, row["source_id"], row)
     return {"source_id": row["source_id"], "version": row["version"], "occurred_at": row["occurred_at"],
+            "expires_at": row["expires_at"],
             "text": text.decode("utf-8"), "role": metadata.get("role"), "origin": metadata.get("origin"),
             "session_id": metadata.get("session_id", ""), "timezone": metadata.get("timezone", "UTC"),
             "parent_source_id": metadata.get("parent_source_id") or None,
@@ -328,9 +329,71 @@ def validate_statement_on(store, conn, tenant, source_id, source_version, start,
     return event, quote
 
 
+def preview_evidence(actor: Actor, *, source_id: str, source_version: int,
+                     start: int, end: int, store: PersonalMemoryStore) -> dict:
+    """Validate a source span without returning its text or writing claims."""
+    with store._tx() as conn:
+        tenant = store._ensure_principal_on(conn, actor)
+        event, quote = validate_statement_on(
+            store, conn, tenant, source_id, source_version, start, end)
+        existing = conn.execute(
+            """SELECT e.claim_id FROM memory_evidence e
+               JOIN memory_claims c ON c.id=e.claim_id
+               WHERE e.tenant_id=? AND e.source_id=? AND e.source_version=?
+                 AND e.span_start=? AND e.span_end=? AND c.deleted_at IS NULL""",
+            (tenant, source_id, source_version, start, end),
+        ).fetchone()
+        overlap = conn.execute(
+            """SELECT e.claim_id FROM memory_evidence e
+               JOIN memory_claims c ON c.id=e.claim_id
+               WHERE e.tenant_id=? AND e.source_id=? AND e.source_version=?
+                 AND e.span_start<? AND e.span_end>? AND c.deleted_at IS NULL
+               LIMIT 1""",
+            (tenant, source_id, source_version, end, start),
+        ).fetchone()
+        existing_claim = None
+        if existing:
+            latest = store._newest_claim_version(conn, tenant, existing["claim_id"])
+            existing_claim = {
+                "claim_id": str(existing["claim_id"]),
+                "version": int(latest["version"]) if latest else None,
+                "state": str(latest["state"]) if latest else None,
+            }
+        result = {
+            "source_id": str(source_id), "source_version": source_version,
+            "start": start, "end": end, "role": event["role"],
+            "origin": event["origin"], "occurred_at": event["occurred_at"],
+            "expires_at": event["expires_at"],
+            "attachments": event["attachments"],
+            "quote_sha256": hashlib.sha256(quote.encode("utf-8")).hexdigest(),
+            "existing_claim": existing_claim,
+            "overlap": bool(overlap) and not bool(existing),
+        }
+    from .reconcile import preview_reconciliation_conflicts
+    result["reconciliation_conflicts"] = preview_reconciliation_conflicts(
+        actor, quote, store=store)
+    return result
+
+
 def remember_from_evidence(actor: Actor, *, source_id: str, source_version: int, start: int, end: int,
-                           claim_kind: str = "confirmed_fact", store: PersonalMemoryStore) -> dict:
+                           claim_kind: str = "confirmed_fact",
+                           bind_to_source_lifetime: bool = False,
+                           store: PersonalMemoryStore) -> dict:
+    if type(bind_to_source_lifetime) is not bool:
+        raise ValidationError("bind_to_source_lifetime: boolean required")
     validate_claim_kind(claim_kind)
+    if bind_to_source_lifetime:
+        if store.get_memory_mode(actor) != "auto_insight":
+            raise ValidationError(
+                "bind_to_source_lifetime requires auto_insight mode")
+        with store._tx() as conn:
+            tenant = store._ensure_principal_on(conn, actor)
+            _, quote = validate_statement_on(
+                store, conn, tenant, source_id, source_version, start, end)
+        from .reconcile import preview_reconciliation_conflicts
+        if preview_reconciliation_conflicts(actor, quote, store=store):
+            raise ValidationError(
+                "bind_to_source_lifetime refuses current memory conflicts")
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
         event, quote = _evidence_source_on(store, conn, tenant, source_id, source_version, start, end)
@@ -347,7 +410,14 @@ def remember_from_evidence(actor: Actor, *, source_id: str, source_version: int,
         cid, now = str(uuid.uuid4()), utcnow_iso()
         # Candidates use the existing reconciliation policy before promotion.
         conn.execute("INSERT INTO memory_claims(id,tenant_id,claim_kind,created_at) VALUES(?,?,?,?)", (cid, tenant, claim_kind, now))
-        expires = (datetime.now(utc.utc) + timedelta(days=3650)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if bind_to_source_lifetime:
+            # A claim backed only by this journal source must not outlive its
+            # evidence. Otherwise a delayed retention tick can leave a
+            # confirmed fact visible after the source has expired.
+            expires = str(event["expires_at"])
+        else:
+            expires = (datetime.now(utc.utc) + timedelta(days=3650)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
         vid = store._insert_claim_version(conn, tenant_id=tenant, claim_id=cid, version=1, state=MemoryState.CANDIDATE,
             sensitivity="normal", content=quote.encode(), confidence=0.9, explanation="Exact owner source span",
             valid_from=None, valid_to=None, expires_at=expires, supersedes_id=None, now=now, change_reason="created")
@@ -356,9 +426,13 @@ def remember_from_evidence(actor: Actor, *, source_id: str, source_version: int,
         store._sync_claim_fts_on(conn, tenant_id=tenant, claim_id=cid, state=MemoryState.CANDIDATE, sensitivity="normal", content=quote.encode(), explanation="Exact owner source span")
     from .reconcile import propose_reconciliations
     proposed = propose_reconciliations(actor, cid, store=store)
-    result = {"claim_id": cid, "claim_version_id": vid, "version": 1, "state": "candidate", "reconciliations": proposed}
+    result = {"claim_id": cid, "claim_version_id": vid, "version": 1,
+              "state": "candidate", "expires_at": expires,
+              "reconciliations": proposed}
     if store.get_memory_mode(actor) == "auto_insight" and not proposed:
-        result.update(store.confirm_claim(actor, cid, reliable_source_id=source_id))
+        confirmation = {"_expires_at": expires} if bind_to_source_lifetime else {}
+        result.update(store.confirm_claim(
+            actor, cid, reliable_source_id=source_id, **confirmation))
     return result
 
 
