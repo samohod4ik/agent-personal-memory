@@ -29,7 +29,7 @@ from .locale import (
     normalize_language,
 )
 from .query import get_authorized_claim
-from .store import PersonalMemoryStore
+from .store import ErasureImpact, PersonalMemoryStore
 from .types import Actor
 from .validation import ValidationError, content_hash_for
 
@@ -105,6 +105,7 @@ class DeleteRequest:
     consumed: bool = False
     cancelled: bool = False
     items: list[dict[str, object]] = field(default_factory=list)
+    impact: ErasureImpact | None = None
 
 
 @dataclass
@@ -150,6 +151,7 @@ class DeleteRegistry:
         language: str,
         require_state: str | None = None,
         items: list[dict[str, object]] | None = None,
+        impact: ErasureImpact | None = None,
     ) -> DeleteRequest:
         if not targets:
             raise ValidationError("request: no authorized targets to delete")
@@ -172,6 +174,7 @@ class DeleteRegistry:
                 expires_mono=now + self._ttl,
                 require_state=require_state,
                 items=list(items or []),
+                impact=impact,
             )
             self._requests[request_id] = record
             return record
@@ -459,6 +462,7 @@ def create_delete_preview(
         language=lang,
         require_state=require_state,
         items=items,
+        impact=store.preview_erasure_impact(actor, claim_ids=[target.claim_id for target in targets]),
     )
     command = f"/{MEMORY_DELETE_COMMAND.replace('-', '_')} {record.request_id}"
     payload["request_id"] = record.request_id
@@ -485,6 +489,8 @@ def consume_delete_request(
         record.actor,
         [target.as_dict() for target in record.targets],
         require_state=record.require_state,
+        require_impact_ack=True,
+        impact_fingerprint=record.impact.fingerprint if record.impact else None,
     )
     erased_ids = [target.claim_id for target in record.targets]
     kind = {
@@ -545,6 +551,11 @@ def _canonical_preview_text(record: DeleteRequest, nonce: str) -> str:
     lines = [_preview_heading(lang, record.action, len(record.targets))]
     for item in record.items:
         lines.append(f"- {item.get('summary')}")
+    if record.impact is not None:
+        if lang == "ru":
+            lines.append(f"Также будут удалены все созданные ответы и результаты инструментов: {record.impact.generated_count}; связанных записей происхождения: {record.impact.lineage_count}. Связанные производные записи также могут быть удалены.")
+        else:
+            lines.append(f"This also removes all {record.impact.generated_count} generated assistant responses and tool results; {record.impact.lineage_count} lineage links exist. Related derived records may also be removed.")
     confirm = f"/{MEMORY_CONFIRM_COMMAND.replace('-', '_')} {nonce}"
     cancel = f"/{MEMORY_CANCEL_COMMAND.replace('-', '_')} {record.request_id}"
     if lang == "ru":

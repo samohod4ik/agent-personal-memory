@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -157,6 +158,8 @@ def learn_from_turn(
     *,
     judge: ConflictJudge | None = None,
     store: PersonalMemoryStore,
+    source_id: str | None = None,
+    source_version: int | None = None,
 ) -> dict[str, Any]:
     memory = store
     mode = memory.get_memory_mode(actor)
@@ -169,7 +172,27 @@ def learn_from_turn(
     text = (turn_text or "").strip()
     if not text:
         return {"mode": mode, "persisted": [], "skipped": "empty"}
+    if source_id is not None and re.match(r"(?i)^(?:исправь|correct)\b", text):
+        return {"mode": mode, "persisted": [], "skipped": "correction_requires_target"}
     insights = extract_insights(text)
+    if source_id is not None:
+        from .journal import remember_from_evidence
+        if type(source_version) is not int:
+            raise ValidationError("source_version: required with source_id")
+        original = memory.get_source(actor, source_id)
+        if original["version"] != source_version or original["snapshot"].decode("utf-8") != turn_text:
+            raise ValidationError("source: exact current original turn required")
+        results = []
+        for insight in insights:
+            start = turn_text.find(insight.content)
+            if start < 0:
+                continue  # Normalized/paraphrased extraction is not exact proof.
+            try:
+                results.append(remember_from_evidence(actor, source_id=source_id, source_version=source_version,
+                    start=start, end=start + len(insight.content), claim_kind=insight.claim_kind, store=memory))
+            except ValidationError:
+                continue
+        return {"mode": mode, "persisted": results, "skipped": ""}
     existing = _existing_norms(actor, memory)
     persisted: list[dict[str, object]] = []
     for insight in insights:

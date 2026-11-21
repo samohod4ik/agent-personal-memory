@@ -169,6 +169,7 @@ def assemble_context(
     states: object = None,
     record_budget: object = 50,
     token_budget: object = 4000,
+    include_core: bool = False,
 ) -> dict[str, object]:
     memory = _memory(memory_store)
     rec_limit = validate_assembly_record_budget(record_budget)
@@ -176,6 +177,12 @@ def assemble_context(
     session = validate_assembly_session_items(session_items)
     rank_query = validate_optional_rank_query_text(query_text)
     state_filter = validate_query_states(states)
+    core = {"text": "", "items": [], "chars_used": 0}
+    core_tokens = 0
+    if include_core:
+        from .layered import build_core
+        core = build_core(actor, store=memory, char_budget=min(1200, tok_limit * 4))
+        core_tokens = (len(core["text"]) + 3) // 4
     fetch_limit = rec_limit
     personal_items = _collect_personal_items(
         actor,
@@ -191,11 +198,16 @@ def assemble_context(
             "session": session_section,
         },
         record_budget=rec_limit,
-        token_budget=tok_limit,
+        token_budget=tok_limit - core_tokens,
     )
-    return {
+    budgets["tokens_estimated"] += core_tokens
+    budgets["token_limit"] = tok_limit
+    result = {
         "assembled_at": utcnow_iso(),
         "budgets": budgets,
         "personal": {"items": selected["personal"]},
         "session": {"items": selected["session"]},
     }
+    if include_core:
+        result["core"] = core
+    return result

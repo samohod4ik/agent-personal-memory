@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import sqlite3
 import threading
 import uuid
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -57,7 +60,7 @@ from .validation import (
 
 logger = logging.getLogger("plugins.personal-memory")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _CREATE_SCHEMA_SQL = (
     """
@@ -309,6 +312,7 @@ AUDIT_ACTIONS = frozenset(
         "claim.link_accept",
         "claim.link_reject",
         "claim.retract",
+        "claim.supersede",
         "claim.history",
     }
 )
@@ -351,6 +355,7 @@ AUDIT_REASONS = frozenset(
         "content_changed",
         "confirmation_required",
         "invalid_transition",
+        "auto_core_reply_length",
     }
 )
 
@@ -394,6 +399,14 @@ def default_data_dir() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".agent-personal-memory"
+
+
+@dataclass(frozen=True)
+class ErasureImpact:
+    """Actor-scoped conservative generated-output purge scope, version 2."""
+    generated_count: int
+    lineage_count: int
+    fingerprint: str
 
 
 class PersonalMemoryStore:
@@ -462,6 +475,10 @@ class PersonalMemoryStore:
                         conn.execute(statement)
                 if current < 5:
                     for statement in _V5_SCHEMA_SQL:
+                        conn.execute(statement)
+                if current < 6:
+                    from .layered_store import SCHEMA
+                    for statement in SCHEMA:
                         conn.execute(statement)
                 if current < self.SCHEMA_VERSION:
                     conn.execute(
@@ -1605,6 +1622,8 @@ class PersonalMemoryStore:
         newest: sqlite3.Row,
         support_ids: list[str],
         change_reason: str = "promoted",
+        expires_at: str | None = None,
+        policy_reason: str = "",
     ) -> dict[str, object]:
         """Confirm a candidate claim inside an open transaction.
 
@@ -1636,11 +1655,13 @@ class PersonalMemoryStore:
             explanation=explanation,
             valid_from=newest["valid_from"],
             valid_to=newest["valid_to"],
-            expires_at=None,
+            expires_at=expires_at,
             supersedes_id=previous_id,
             now=now,
             change_reason=change_reason,
         )
+        from .journal import copy_evidence_on
+        copy_evidence_on(conn, tenant_id, str(claim_row["id"]), int(newest["version"]), next_version)
         self._insert_support(
             conn,
             tenant_id=tenant_id,
@@ -1656,7 +1677,7 @@ class PersonalMemoryStore:
             target_kind="claim_version",
             target_id=version_id,
             outcome="confirmed",
-            policy_reason="",
+            policy_reason=policy_reason,
         )
         self._sync_claim_fts_on(
             conn,
@@ -1675,7 +1696,7 @@ class PersonalMemoryStore:
             state=MemoryState.CONFIRMED,
             sensitivity=str(newest["sensitivity"]),
             confidence=float(newest["confidence"]),
-            expires_at=None,
+            expires_at=expires_at,
             created_at=now,
             supersedes_id=previous_id,
         )
@@ -1693,6 +1714,7 @@ class PersonalMemoryStore:
         valid_from: str | None = None,
         valid_to: str | None = None,
         expires_at: str | None = None,
+        _evidence: tuple[str, int, int, int] | None = None,
     ) -> dict[str, object]:
         pending_error: Exception | None = None
         with self._tx() as conn:
@@ -1714,6 +1736,15 @@ class PersonalMemoryStore:
                 pending_error = ValidationError("claim: invalid transition")
             else:
                 try:
+                    if _evidence is not None:
+                        from .journal import validate_statement_on
+                        _event, quote = validate_statement_on(self, conn, tenant_id, *_evidence)
+                        if content != quote.encode("utf-8") or _evidence[0] not in source_ids:
+                            raise ValidationError("correction: source content changed")
+                        sid, sv, begin, finish = _evidence
+                        overlap = conn.execute("SELECT 1 FROM memory_evidence e JOIN memory_claims c ON c.id=e.claim_id WHERE e.tenant_id=? AND e.source_id=? AND e.source_version=? AND e.span_start<? AND e.span_end>? AND e.claim_id<>? AND c.deleted_at IS NULL LIMIT 1", (tenant_id, sid, sv, finish, begin, claim_id)).fetchone()
+                        if overlap:
+                            raise ValidationError("correction: evidence overlaps another retained fact")
                     fields = validate_correct_fields(
                         content=content,
                         explanation=explanation,
@@ -1780,6 +1811,11 @@ class PersonalMemoryStore:
                         now=now,
                         change_reason="changed",
                     )
+                    if _evidence is not None:
+                        sid, sv, begin, finish = _evidence
+                        conn.execute("INSERT INTO memory_evidence VALUES(?,?,?,?,?,?,?)", (tenant_id, str(claim_row["id"]), next_version, sid, sv, begin, finish))
+                    from .journal import erase_derived_sources_on
+                    erase_derived_sources_on(self, conn, tenant_id, "")
                     self._insert_support(
                         conn,
                         tenant_id=tenant_id,
@@ -1917,6 +1953,8 @@ class PersonalMemoryStore:
                         now=now,
                         change_reason="retracted",
                     )
+                    from .journal import erase_derived_sources_on
+                    erase_derived_sources_on(self, conn, tenant_id, "")
                     self._insert_support(
                         conn,
                         tenant_id=tenant_id,
@@ -2958,11 +2996,17 @@ class PersonalMemoryStore:
         )
 
     def _erase_claim_on(
-        self, conn: sqlite3.Connection, *, tenant_id: str, claim_id: str
+        self, conn: sqlite3.Connection, *, tenant_id: str, claim_id: str, _redact_sources: bool = True
     ) -> ErasureReceipt:
         from .fts_index import delete_claim_fts_rows
 
         now = utcnow_iso()
+        from .journal import erase_evidence_on
+        if _redact_sources:
+            erase_evidence_on(self, conn, tenant_id, claim_id, now)
+        else:
+            conn.execute("DELETE FROM memory_evidence WHERE tenant_id=? AND claim_id=?", (tenant_id, claim_id))
+            conn.execute("DELETE FROM memory_relations WHERE tenant_id=? AND (from_claim_id=? OR to_claim_id=?)", (tenant_id, claim_id, claim_id))
         delete_claim_fts_rows(conn, tenant_id=tenant_id, claim_id=claim_id)
         self._destroy_claim_blobs(conn, tenant_id=tenant_id, claim_id=claim_id)
         conn.execute(
@@ -2999,8 +3043,16 @@ class PersonalMemoryStore:
         )
 
     def _erase_source_on(
-        self, conn: sqlite3.Connection, *, tenant_id: str, source_id: str
+        self, conn: sqlite3.Connection, *, tenant_id: str, source_id: str, _cascade_derived: bool = True
     ) -> ErasureReceipt:
+        from .layered_store import purge_projections_on
+        from .journal import erase_derived_sources_on
+        if _cascade_derived:
+            erase_derived_sources_on(self, conn, tenant_id, source_id)
+        conn.execute("DELETE FROM memory_source_lineage WHERE tenant_id=? AND source_id=?", (tenant_id, source_id))
+        purge_projections_on(self, conn, tenant_id, utcnow_iso())
+        conn.execute("UPDATE memory_journal SET redacted=1 WHERE tenant_id=? AND source_id=?", (tenant_id, source_id))
+        conn.execute("DELETE FROM memory_relations WHERE tenant_id=? AND source_id=?", (tenant_id, source_id))
         dependents = [
             str(row["claim_id"])
             for row in conn.execute(
@@ -3043,19 +3095,106 @@ class PersonalMemoryStore:
             now=now,
         )
 
-    def erase_bound_claims(
+    def _erasure_impact_on(self, conn: sqlite3.Connection, tenant_id: str, *, claim_ids=(), source_ids=()) -> ErasureImpact:
+        # The erasure policy purges every active generated source and walks
+        # lineage from both those sources and the selected roots. Bind all
+        # actor lineage, because even an initially unrelated edge can become
+        # relevant to a selected root or a recursively erased source.
+        generated = [row[0] for row in conn.execute(
+            "SELECT id FROM memory_sources WHERE tenant_id=? AND deleted_at IS NULL "
+            "AND source_kind IN ('assistant_message','tool_result') ORDER BY id", (tenant_id,))]
+        lineage = [tuple(row) for row in conn.execute(
+            "SELECT source_id, parent_source_id, parent_source_version FROM memory_source_lineage "
+            "WHERE tenant_id=? ORDER BY source_id, parent_source_id", (tenant_id,))]
+        # Follow both support and evidence from generated sources and lineage
+        # endpoints. A dependent claim can recursively erase other sources and
+        # claims; unrelated claims do not change the reviewed purge scope.
+        support_all = [tuple(row) for row in conn.execute(
+            "SELECT id, claim_id, source_id FROM memory_support WHERE tenant_id=? "
+            "ORDER BY claim_id, source_id, id", (tenant_id,))]
+        evidence_all = [tuple(row) for row in conn.execute(
+            "SELECT claim_id, claim_version, source_id, source_version, span_start, span_end "
+            "FROM memory_evidence WHERE tenant_id=? "
+            "ORDER BY claim_id, claim_version, source_id, source_version, span_start, span_end", (tenant_id,))]
+        sources = set(generated)
+        sources.update(source_id for child, parent, _ in lineage for source_id in (child, parent))
+        sources.update(source_ids)
+        # Claim erasure redacts evidence originals; legacy support alone does
+        # not erase its source. Seed only evidence for selected claim roots.
+        sources.update(row[2] for row in evidence_all if row[0] in claim_ids)
+        sources_by_claim = defaultdict(set)
+        claims_by_source = defaultdict(set)
+        for claim, source in {(row[1], row[2]) for row in support_all} | {(row[0], row[2]) for row in evidence_all}:
+            sources_by_claim[claim].add(source)
+            claims_by_source[source].add(claim)
+        reachable_claims = set()
+        pending_sources = list(sources)
+        while pending_sources:
+            source = pending_sources.pop()
+            for claim in claims_by_source[source] - reachable_claims:
+                reachable_claims.add(claim)
+                new_sources = sources_by_claim[claim] - sources
+                pending_sources.extend(new_sources)
+                sources.update(new_sources)
+        source_versions = [tuple(row) for row in conn.execute(
+            "SELECT s.id, s.deleted_at, v.id, v.version, v.content_hash, v.deletion_state "
+            "FROM memory_sources s LEFT JOIN memory_source_versions v "
+            "ON v.tenant_id=s.tenant_id AND v.source_id=s.id "
+            "WHERE s.tenant_id=? ORDER BY s.id, v.version, v.id", (tenant_id,))
+            if row[0] in sources]
+        claims = [tuple(row) for row in conn.execute(
+            "SELECT c.id, c.deleted_at, v.id, v.version, v.state "
+            "FROM memory_claims c LEFT JOIN memory_claim_versions v "
+            "ON v.tenant_id=c.tenant_id AND v.claim_id=c.id "
+            "WHERE c.tenant_id=? ORDER BY c.id, v.version, v.id", (tenant_id,))
+            if row[0] in reachable_claims]
+        support = [row for row in support_all if row[1] in reachable_claims]
+        evidence = [row for row in evidence_all if row[0] in reachable_claims]
+        data = json.dumps([2, tenant_id, sorted(set(claim_ids)), sorted(set(source_ids)), generated, lineage, source_versions, claims, support, evidence],
+                          ensure_ascii=False, separators=(",", ":"))
+        return ErasureImpact(len(generated), len(lineage),
+                             "v2:" + hashlib.sha256(data.encode("utf-8")).hexdigest())
+
+    def preview_erasure_impact(self, actor: Actor, *, claim_ids=(), source_ids=()) -> ErasureImpact:
+        """Return purge impact bound to optional actor-owned target IDs.
+
+        For opt-in bound erasure, pass exactly the selected claim and source
+        IDs here; the transaction recomputes impact for those same targets.
+        """
+        claim_ids, source_ids = tuple(claim_ids), tuple(source_ids)
+        with self._tx() as conn:
+            tenant_id = self._ensure_principal_on(conn, actor)
+            if any(self._erasable_claim(conn, tenant_id, cid) is None for cid in claim_ids):
+                raise NotFoundError("Claim not found")
+            if any(self._erasable_source(conn, tenant_id, sid) is None for sid in source_ids):
+                raise NotFoundError("Source not found")
+            return self._erasure_impact_on(conn, tenant_id, claim_ids=claim_ids, source_ids=source_ids)
+
+    def erase_bound_claims(self, actor: Actor, targets: list[dict[str, object]], *, require_state: str | None = None, require_impact_ack: bool = False, impact_fingerprint: str | None = None) -> list[ErasureReceipt]:
+        """Backward-compatible trusted exact-claim deletion boundary."""
+        return self.erase_bound_memory(actor, claim_targets=targets, require_state=require_state, require_impact_ack=require_impact_ack, impact_fingerprint=impact_fingerprint)
+
+    def erase_bound_sources(self, actor: Actor, targets: list[dict[str, object]], *, require_impact_ack: bool = False, impact_fingerprint: str | None = None) -> list[ErasureReceipt]:
+        """Trusted exact-source deletion, including journal-only events."""
+        return self.erase_bound_memory(actor, source_targets=targets, require_impact_ack=require_impact_ack, impact_fingerprint=impact_fingerprint)
+
+    def erase_bound_memory(
         self,
         actor: Actor,
-        targets: list[dict[str, object]],
         *,
+        claim_targets: list[dict[str, object]] | tuple = (),
+        source_targets: list[dict[str, object]] | tuple = (),
         require_state: str | None = None,
+        require_impact_ack: bool = False,
+        impact_fingerprint: str | None = None,
     ) -> list[ErasureReceipt]:
         """Erase an exact reviewed target set, or deny the entire batch.
 
         Rechecks claim id, version, version id, and content hash inside one
         BEGIN IMMEDIATE transaction. Compaction runs only after commit.
         """
-        if not targets:
+        targets = claim_targets
+        if not targets and not source_targets:
             raise ConflictError("Delete target set is empty")
         pending_error: Exception | None = None
         receipts: list[ErasureReceipt] = []
@@ -3107,13 +3246,37 @@ class PersonalMemoryStore:
                     pending_error = ConflictError("Delete target set changed")
                     break
                 checked_ids.append(str(row["id"]))
+            checked_sources: list[str] = []
             if pending_error is None:
-                for claim_id in checked_ids:
-                    receipts.append(
-                        self._erase_claim_on(
-                            conn, tenant_id=tenant_id, claim_id=claim_id
-                        )
-                    )
+                for raw in source_targets:
+                    source_id = str(raw.get("source_id") or "")
+                    row = self._erasable_source(conn, tenant_id, source_id)
+                    newest = self._newest_active_version(conn, tenant_id, source_id) if row is not None else None
+                    try:
+                        if newest is None:
+                            raise NotFoundError("Source not found")
+                        snapshot, _, _ = self._decrypt_version(conn, tenant_id, source_id, newest)
+                        valid = (type(raw.get("version")) is int and newest["version"] == raw["version"]
+                            and newest["id"] == raw.get("source_version_id")
+                            and content_hash_for(snapshot) == raw.get("content_hash"))
+                    except (LookupError, CryptoError, TypeError, ValueError):
+                        valid = False
+                    if not valid:
+                        self._deny_source(conn, tenant_id=tenant_id, action="source.erase")
+                        pending_error = ConflictError("Delete target set changed")
+                        break
+                    if source_id not in checked_sources:
+                        checked_sources.append(source_id)
+            if pending_error is None and require_impact_ack:
+                impact = self._erasure_impact_on(conn, tenant_id, claim_ids=checked_ids, source_ids=checked_sources)
+                if not impact_fingerprint or impact_fingerprint != impact.fingerprint:
+                    pending_error = ConflictError("Delete impact changed or was not acknowledged")
+            if pending_error is None:
+                for claim_id in dict.fromkeys(checked_ids):
+                    if self._erasable_claim(conn, tenant_id, claim_id) is not None:
+                        receipts.append(self._erase_claim_on(conn, tenant_id=tenant_id, claim_id=claim_id))
+                for source_id in checked_sources:
+                    receipts.append(self._erase_source_on(conn, tenant_id=tenant_id, source_id=source_id))
         if pending_error is not None:
             raise pending_error
         if receipts:
