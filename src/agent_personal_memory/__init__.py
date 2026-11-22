@@ -17,6 +17,7 @@ from __future__ import annotations
 from .dreaming import record_action_receipt, recall_reviews
 from .assembler import assemble_context
 from .journal import CapturePolicy, record_turn, get_journal_event, query_journal, remember_from_evidence, evidence_for_claim, prune_journal, correct_from_evidence
+from .report_order import invalidate_report_order_source
 from .layered import build_core, recall, link_memories, export_markdown
 from .consolidation import (
     ConsolidationBudget, ConsolidationNotStarted, consolidate_period, pending_periods,
@@ -149,6 +150,7 @@ __all__ = (
     "CapturePolicy", "record_turn", "get_journal_event", "query_journal", "remember_from_evidence", "evidence_for_claim", "prune_journal", "correct_from_evidence",
     "build_core", "recall", "link_memories", "export_markdown", "ConsolidationBudget", "consolidate_period", "pending_periods", "mark_capture_complete",
     "report_order_uncredited_attempts",
+    "invalidate_report_order_source",
     "ACCEPT_MEMORY_RECONCILIATION_SCHEMA",
     "Actor",
     "ASSEMBLE_CONTEXT_SCHEMA",

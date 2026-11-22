@@ -60,7 +60,7 @@ from .validation import (
 
 logger = logging.getLogger("plugins.personal-memory")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _CREATE_SCHEMA_SQL = (
     """
@@ -488,6 +488,9 @@ class PersonalMemoryStore:
                 if current < 8:
                     from .layered_store import migrate_report_order_admissions_on
                     migrate_report_order_admissions_on(conn)
+                if current < 9:
+                    from .layered_store import REPORT_ORDER_VISIBILITY_SCHEMA
+                    conn.execute(REPORT_ORDER_VISIBILITY_SCHEMA)
                 if current < self.SCHEMA_VERSION:
                     conn.execute(
                         "INSERT OR REPLACE INTO memory_schema(id, version) VALUES (1, ?)",

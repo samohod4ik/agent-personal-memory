@@ -8,7 +8,8 @@ from itertools import groupby
 
 from .journal import _evidence_source_on
 from .lifecycle import MemoryState
-from .store import NotFoundError, utcnow_iso
+from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
+from .types import Actor
 from .validation import ValidationError
 
 POLICY = "auto_core_report_order"
@@ -91,7 +92,59 @@ def names_slot(text):
     return bool(_NAMED_REPORT.search(text) and _NAMED_ORDER.search(text) and _NAMED_DIRECTION.search(text))
 
 
+def invalidate_report_order_source(
+    actor: Actor, *, store: PersonalMemoryStore, source_id: str, source_version: int, task_id: str,
+) -> dict:
+    """Mark an exact attested source unavailable after a trusted host check."""
+    if (not isinstance(source_id, str) or not 0 < len(source_id) <= 128
+            or type(source_version) is not int or not 0 < source_version < (1 << 63)
+            or not isinstance(task_id, str) or not 0 < len(task_id) <= 512):
+        raise ValidationError("report order: valid source, version and task required")
+    if actor.platform != "bb":
+        raise NotFoundError("Report order source not found")
+    with store._tx() as conn:
+        row = conn.execute("""SELECT v.* FROM memory_source_versions v
+            JOIN memory_journal j ON j.tenant_id=v.tenant_id AND j.source_id=v.source_id
+            JOIN memory_sources s ON s.tenant_id=j.tenant_id AND s.id=j.source_id
+            JOIN memory_principals p ON p.id=v.tenant_id
+            WHERE p.platform=? AND p.user_id=? AND v.source_id=? AND v.version=?
+            AND v.deletion_state='active' AND j.redacted=0 AND s.deleted_at IS NULL
+            AND s.source_kind='auto_insight_turn'""",
+            (actor.platform, actor.user_id, source_id, source_version),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("Report order source not found")
+        _, _, metadata = store._decrypt_version(conn, row["tenant_id"], source_id, row)
+        if metadata.get("report_order_task_id") != task_id or metadata.get("whole_owner_turn") != "1":
+            raise NotFoundError("Report order source not found")
+        args = (row["tenant_id"], source_id, source_version)
+        changed = conn.execute("INSERT OR IGNORE INTO memory_report_order_unavailable_sources VALUES(?,?,?)",
+                               args).rowcount
+        conn.execute("DELETE FROM memory_report_order_votes WHERE tenant_id=? AND source_id=? AND source_version=?",
+                     args)
+    return {"status": "invalidated" if changed else "already_invalidated",
+            "source_id": source_id, "source_version": source_version}
+
+
+def source_unavailable_on(conn, tenant, source_id, version):
+    return conn.execute("""SELECT 1 FROM memory_report_order_unavailable_sources
+        WHERE tenant_id=? AND source_id=? AND source_version=?""", (tenant, source_id, version)).fetchone() is not None
+
+
+def unavailable_sources_on(conn, tenant):
+    return {tuple(row) for row in conn.execute("""WITH RECURSIVE unavailable(source_id,version) AS (
+        SELECT source_id,source_version FROM memory_report_order_unavailable_sources WHERE tenant_id=?
+        UNION
+        SELECT v.source_id,v.version FROM memory_source_lineage l
+        JOIN unavailable u ON u.source_id=l.parent_source_id AND u.version=l.parent_source_version
+        JOIN memory_source_versions v ON v.tenant_id=l.tenant_id AND v.source_id=l.source_id
+        WHERE l.tenant_id=?
+    ) SELECT source_id,version FROM unavailable""", (tenant, tenant))}
+
+
 def _proof(store, conn, tenant, source_id, version, start, end):
+    if source_unavailable_on(conn, tenant, source_id, version):
+        raise NotFoundError("Report order source no longer available")
     event, quote = _evidence_source_on(
         store, conn, tenant, source_id, version, start, end,
         require_unredacted=True, include_report_order_context=True,

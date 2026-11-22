@@ -292,17 +292,26 @@ def event_on(store, conn, tenant, row, *, include_report_order_context=False):
 
 
 def query_journal(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50,
-                  cursor: str | None = None, query: str | None = None, include_text: bool = False) -> dict:
+                  cursor: str | None = None, query: str | None = None, include_text: bool = False,
+                  report_order_enabled: bool = False) -> dict:
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValidationError("limit: 1..500 required")
     if query is not None and not isinstance(query, str):
         raise ValidationError("query: string required")
     if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 200):
         raise ValidationError("cursor: invalid")
+    if type(report_order_enabled) is not bool:
+        raise ValidationError("report_order_enabled: boolean required")
     items, last, more = [], None, False
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
+        unavailable = set()
+        if report_order_enabled and actor.platform == "bb":
+            from .report_order import unavailable_sources_on
+            unavailable = unavailable_sources_on(conn, tenant)
         for row in journal_rows_on(store, conn, tenant):
+            if (row["source_id"], row["version"]) in unavailable:
+                continue
             key = row["occurred_at"] + "|" + row["source_id"]
             if cursor is not None and key <= cursor:
                 continue
@@ -423,7 +432,13 @@ def evidence_for_claim(actor: Actor, claim_id: str, *, store: PersonalMemoryStor
     results, used = [], 0
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
+        unavailable = set()
+        if report_order_enabled and actor.platform == "bb":
+            from .report_order import unavailable_sources_on
+            unavailable = unavailable_sources_on(conn, tenant)
         for row in conn.execute("SELECT * FROM memory_evidence WHERE tenant_id=? AND claim_id=? AND claim_version=?", (tenant, claim_id, claim["version"])):
+            if (row["source_id"], row["source_version"]) in unavailable:
+                continue
             try:
                 event, quote = _evidence_source_on(store, conn, tenant, row["source_id"], row["source_version"], row["span_start"], row["span_end"])
             except NotFoundError:

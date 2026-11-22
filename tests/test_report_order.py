@@ -148,6 +148,111 @@ class ReportOrderTests(TestCase):
         self.store = apm.PersonalMemoryStore(self.store.data_dir)
         self.check_value(None)
 
+    def test_invalidation_hides_only_attested_version_and_preserves_original(self):
+        first, second = self.learn()
+        with self.store._tx() as conn:
+            conn.execute("DROP TABLE memory_report_order_unavailable_sources")
+            conn.execute("UPDATE memory_schema SET version=8")
+        self.store = apm.PersonalMemoryStore(self.store.data_dir)
+        habit, = self.check_value(COMMAND)
+        unrelated = self.capture("unrelated", 2, "Keep ordinary tests concise.", report_order_enabled=False)
+        manual = apm.remember_from_evidence(
+            self.actor, source_id=unrelated["source_id"], source_version=unrelated["version"],
+            start=0, end=len("Keep ordinary tests concise."), claim_kind="preference", store=self.store,
+        )
+        ids = {"source_id": first["source_id"], "source_version": first["version"], "task_id": "task-1"}
+        for actor, values in (
+            (apm.Actor("bb", "other-owner"), ids),
+            (self.actor, {**ids, "source_version": 2}),
+            (self.actor, {**ids, "task_id": "wrong-task"}),
+            (self.actor, {**ids, "source_id": "unknown-source"}),
+            (self.actor, {**ids, "source_id": unrelated["source_id"]}),
+        ):
+            with self.subTest(actor=actor, values=values), self.assertRaises(NotFoundError):
+                apm.invalidate_report_order_source(actor, store=self.store, **values)
+        result = apm.invalidate_report_order_source(self.actor, store=self.store, **ids)
+        self.assertEqual(result, {"status": "invalidated", "source_id": first["source_id"], "source_version": 1})
+        self.assertEqual(apm.invalidate_report_order_source(
+            self.actor, store=self.store, **ids)["status"], "already_invalidated")
+        self.assertEqual(self.capture("task-1", 0)["status"], "replayed")
+
+        self.store = apm.PersonalMemoryStore(self.store.data_dir)
+        for mode in (False, True):
+            core = apm.build_core(self.actor, store=self.store, report_order_enabled=mode)
+            self.assertEqual([item["claim_id"] for item in core["items"]], [manual["claim_id"]])
+        query = "Вынеси команду запуска наверх"
+        recall = apm.recall(self.actor, store=self.store, query=query,
+                            include_journal=True, report_order_enabled=True)
+        self.assertFalse(any(item.get("source_id") == first["source_id"] for item in recall["items"]))
+        proof = apm.evidence_for_claim(self.actor, habit["claim_id"], store=self.store, report_order_enabled=True)
+        self.assertEqual([item["source_id"] for item in proof], [second["source_id"]])
+        originals = apm.query_journal(self.actor, store=self.store, include_text=True)["items"]
+        self.assertIn(first["source_id"], {event["source_id"] for event in originals})
+        self.assertIn(second["source_id"], {event["source_id"] for event in originals})
+
+    def test_already_counted_and_in_flight_invalidated_votes_cannot_promote(self):
+        first = self.capture("already-voted", 0)
+        self.judge(0)
+        second = self.capture("in-flight", 1)
+        apm.invalidate_report_order_source(
+            self.actor, store=self.store, source_id=first["source_id"],
+            source_version=first["version"], task_id="already-voted")
+        result = self.judge(1, callback=lambda: apm.invalidate_report_order_source(
+            self.actor, store=self.store, source_id=second["source_id"],
+            source_version=second["version"], task_id="in-flight"))
+        self.assertIn(result["status"], ("stale", "pending"))
+        self.capture("single-good-vote", 2)
+        self.judge(2)
+        self.check_value(None)
+
+    def test_unavailable_original_and_derived_context_stay_out_of_new_judge_input(self):
+        old = self.capture("unavailable", 0)
+        context = self.capture(
+            "unavailable-context", 0, "Prior report with restricted context.", minute=1,
+            whole_owner_turn=False, role="assistant", origin="derived",
+            parent_source_id=old["source_id"], parent_source_version=old["version"],
+        )
+        active = self.capture("available", 0, minute=2)
+        apm.invalidate_report_order_source(
+            self.actor, store=self.store, source_id=old["source_id"],
+            source_version=old["version"], task_id="unavailable")
+        seen = []
+
+        def adapter(request):
+            seen.extend(event["source_id"] for event in request["events"])
+            return {"usage": {"input_tokens": 1, "output_tokens": 1}}
+
+        result = apm.consolidate_period(
+            self.actor, period="day", start=self.day.isoformat(), store=self.store,
+            adapter=adapter, report_order_enabled=True,
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(seen, [active["source_id"]])
+        self.assertIn(context["source_id"], {event["source_id"] for event in
+                      apm.query_journal(self.actor, store=self.store, include_text=True)["items"]})
+
+    def test_invalidate_historical_attestation_without_harming_new_version_or_revocation(self):
+        original = self.capture("release", 0, "Start with the command.")
+        edited = self.capture("release", 0, "Give the command first.")
+        self.assertEqual(edited["version"], 2)
+        result = apm.invalidate_report_order_source(
+            self.actor, store=self.store, source_id=original["source_id"],
+            source_version=original["version"], task_id="release")
+        self.assertEqual(result["status"], "invalidated")
+        self.judge(0)
+        self.capture("independent", 1)
+        self.judge(1)
+        self.check_value(COMMAND)
+
+        revoke = self.capture("direct-revoke", 3, "Stop putting the command first in failed-test reports.")
+        apm.invalidate_report_order_source(
+            self.actor, store=self.store, source_id=revoke["source_id"],
+            source_version=revoke["version"], task_id="direct-revoke")
+        for minute in (1, 2):
+            self.capture(f"late-{minute}", 2, minute=minute)
+        self.judge(2)
+        self.check_value(None)
+
     def test_unrelated_confirmed_preference_remains_and_manual_slot_value_wins(self):
         self.learn()
         manual = "For reports about failed tests, lead with the diagnosis and follow with the command."

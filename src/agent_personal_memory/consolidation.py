@@ -19,7 +19,7 @@ from .auto_core import promote_reply_length_on
 from .dreaming import operation_assessments, validate_reviews
 from .journal import journal_rows_on, event_on, stamp, zone, validate_statement_on, candidate_from_evidence_on
 from .layered import current_claims_on
-from .report_order import apply_observations_on, eligible as report_order_eligible, observations_on
+from .report_order import apply_observations_on, eligible as report_order_eligible, observations_on, unavailable_sources_on
 from .layered_store import encode, put_projection, read_projection
 from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
 from .types import Actor
@@ -298,9 +298,13 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
         if report_order_enabled and data["bounds"][1] > utcnow_iso():
             return {"status": "pending", "reason": "period_open"}
         admitted_sources = _admitted_sources_on(conn, tenant) if adapter is not None and actor.platform == "bb" else set()
+        unavailable = unavailable_sources_on(conn, tenant) if pilot or (adapter is not None and actor.platform == "bb") else set()
+        review_rows = [row for row in data["_rows"]
+                       if row["source_id"] not in admitted_sources
+                       and (row["source_id"], row["version"]) not in unavailable]
         reopened = report_order_enabled and prior_attempt is not None
         fresh_report_order = reopened and adapter is not None and _has_fresh_report_order_input_on(
-            store, conn, tenant, data["_rows"], admitted_sources,
+            store, conn, tenant, review_rows, admitted_sources,
         )
         existing = _projection_on(store, conn, tenant, data)
         prior = conn.execute("SELECT * FROM memory_jobs WHERE tenant_id=? AND job_key=?", (tenant, key)).fetchone()
@@ -319,11 +323,12 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             return {"status": "pending", "reason": "uncertain_provider_outcome"}
         previous_usage = {k: prior[k] if prior_admitted and prior_attempt is None else 0
                           for k in ("calls", "input_tokens", "output_tokens")}
-        review_rows = [row for row in data["_rows"] if row["source_id"] not in admitted_sources]
         if reopened and not fresh_report_order:
             if prior_attempt["state"] in {"uncredited", "rejected"}:
                 return _unsettled_report_order_on(conn, tenant, prior_attempt)
             return {"status": "skipped", "reason": "no_new_report_order_sources", "usage": {"calls": 0}}
+        if report_order_enabled and not review_rows and data["_rows"]:
+            adapter = None
         data["events"], review_coverage = _review_events_on(store, conn, tenant, review_rows,
             adapter=adapter, budget=budget, deadline=beginning + budget.max_seconds,
             report_order_enabled=report_order_enabled, only_report_order=reopened)
@@ -331,7 +336,9 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             return {"status": "budget_exhausted", "reason": "fresh_report_order_input", "usage": {"calls": 0}}
         if adapter is not None:
             data["facts"] = [] if reopened else [fact for fact in data["facts"]
-                if not any(proof["source_id"] in admitted_sources for proof in fact["evidence"])]
+                if not any(proof["source_id"] in admitted_sources
+                           or (proof["source_id"], proof["source_version"]) in unavailable
+                           for proof in fact["evidence"])]
         data["coverage"].update(review_coverage)
         conn.execute("INSERT OR REPLACE INTO memory_jobs VALUES(?,?,?,?,?,?,?,?,?)",
                      (tenant, key, data["fingerprint"], "running", time.time() + budget.max_seconds + 5,
@@ -345,6 +352,7 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
     validation_stage = None
     provider_returned = False
     attempt_identity = {}
+    source_refs = set()
     if adapter is not None:
         request = {"facts": data["facts"], "events": data["events"], "period": period, "bounds": data["bounds"], "coverage": review_coverage,
                    "limits": {"max_output_tokens": budget.max_output_tokens,
@@ -369,12 +377,15 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
                 return {"status": "pending", "reason": "deadline_before_admission", "usage": usage}
             with store._tx() as conn:
                 source_refs = _report_order_refs(data["events"], data["facts"]) if actor.platform == "bb" else set()
-                if source_refs and _admitted_sources_on(conn, tenant).intersection(
-                    source_id for source_id, _ in source_refs
-                ):
+                already_admitted = source_refs and _admitted_sources_on(conn, tenant).intersection(
+                    source_id for source_id, _ in source_refs)
+                newly_unavailable = source_refs and unavailable_sources_on(conn, tenant).intersection(source_refs)
+                if already_admitted or newly_unavailable:
                     conn.execute("""UPDATE memory_jobs SET state='pending',lease_until=0
                         WHERE tenant_id=? AND job_key=? AND owner=? AND calls=0""", (tenant, key, owner))
-                    return {"status": "pending", "reason": "source_already_admitted", "usage": usage}
+                    return {"status": "pending", "reason": (
+                        "source_no_longer_available" if newly_unavailable else "source_already_admitted"
+                    ), "usage": usage}
                 admitted = conn.execute("UPDATE memory_jobs SET calls=1,input_tokens=? WHERE tenant_id=? AND job_key=? AND owner=? AND state='running' AND calls=0 AND lease_until>?", (input_upper_bound, tenant, key, owner, time.time())).rowcount
                 if admitted and report_order_enabled:
                     eligible_sources = {event["source_id"] for event in data["events"]
@@ -479,7 +490,9 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             if attempt is not None:
                 return _unsettled_report_order_on(conn, tenant, attempt)
         fresh = _input_on(store, conn, tenant, period, start, timezone)
-        if lease is None or lease["owner"] != owner or fresh["fingerprint"] != data["fingerprint"]:
+        unavailable_input = source_refs and unavailable_sources_on(conn, tenant).intersection(source_refs)
+        if (lease is None or lease["owner"] != owner or fresh["fingerprint"] != data["fingerprint"]
+                or unavailable_input):
             if provider_returned and report_order_enabled:
                 conn.execute("""UPDATE memory_report_order_attempts SET state='rejected'
                     WHERE tenant_id=? AND owner=?""", (tenant, owner))
@@ -574,6 +587,7 @@ def pending_periods(actor: Actor, *, store: PersonalMemoryStore, timezone: str =
                       "month": {d.replace(day=1) for d in dates}, "year": {d.replace(month=1, day=1) for d in dates}}
         pilot_attempts = {}
         admitted_sources = set()
+        unavailable = set()
         now = time.time()
         if report_order_enabled and actor.platform == "bb":
             for row in conn.execute(
@@ -587,6 +601,7 @@ def pending_periods(actor: Actor, *, store: PersonalMemoryStore, timezone: str =
                     dates.add(date.fromisoformat(row["start"]))
             if pilot_attempts:
                 admitted_sources = _admitted_sources_on(conn, tenant)
+                unavailable = unavailable_sources_on(conn, tenant)
         out = []
         unclosed = {}
         for period in ("day", "week", "month", "year"):
@@ -604,7 +619,9 @@ def pending_periods(actor: Actor, *, store: PersonalMemoryStore, timezone: str =
                 existing = _projection_on(store, conn, tenant, data)
                 if attempt:
                     pending = attempt["state"] == "admitted" or _has_fresh_report_order_input_on(
-                        store, conn, tenant, data["_rows"], admitted_sources,
+                        store, conn, tenant,
+                        [row for row in data["_rows"] if (row["source_id"], row["version"]) not in unavailable],
+                        admitted_sources,
                     )
                 else:
                     pending = existing is None or (include_extractive and _can_review_extractive(existing))

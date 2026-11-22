@@ -331,3 +331,12 @@ Schema 7 recorded attempts without exact membership. On upgrade, the engine
 fences every existing journal source that overlaps a schema 7 attempt's day.
 This includes older revisions and may exclude sources delivered after the old
 attempt but before the upgrade. Later-captured sources use the new ledger.
+
+A trusted BB host can call `invalidate_report_order_source` after confirming
+that an attested source version is no longer visible. The engine verifies the
+owner, task, source and version. That version and its derived context leave
+pilot retrieval and new judge requests. Their originals remain in the owner
+journal. The marker survives restart and replay. It applies to the cited
+revision. The separate judge admission limits still apply to later revisions.
+A withdrawal already accepted from the original continues to fence previous
+votes.

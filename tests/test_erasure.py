@@ -433,7 +433,7 @@ class PersonalMemoryErasureTests(unittest.TestCase):
         self.assertIn("source.erase", AUDIT_ACTIONS)
         self.assertIn("erased", AUDIT_OUTCOMES)
         self.assertIn("claim", AUDIT_TARGET_KINDS)
-        self.assertEqual(self.store.SCHEMA_VERSION, 8)
+        self.assertEqual(self.store.SCHEMA_VERSION, 9)
         conn = self.store._connect()
         try:
             names = {

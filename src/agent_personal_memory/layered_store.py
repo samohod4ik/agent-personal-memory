@@ -93,6 +93,11 @@ REPORT_ORDER_ADMISSION_SCHEMA = (
         ON memory_report_order_admitted_sources(tenant_id,source_id)""",
 )
 
+REPORT_ORDER_VISIBILITY_SCHEMA = """CREATE TABLE IF NOT EXISTS memory_report_order_unavailable_sources (
+    tenant_id TEXT NOT NULL, source_id TEXT NOT NULL, source_version INTEGER NOT NULL,
+    PRIMARY KEY(tenant_id,source_id,source_version),
+    FOREIGN KEY(source_id,source_version) REFERENCES memory_source_versions(source_id,version))"""
+
 
 def migrate_report_order_admissions_on(conn):
     if not any(row["name"] == "admitted_input_bytes"

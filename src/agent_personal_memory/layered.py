@@ -182,7 +182,8 @@ def recall(actor: Actor, *, query: str, store: PersonalMemoryStore, token_budget
     if include_journal:
         # Explicit bounded original opening; excludes assistant/forwarded text
         # from owner-fact retrieval. Today is searchable before consolidation.
-        page = query_journal(actor, store=store, limit=500, query=query, include_text=True)
+        page = query_journal(actor, store=store, limit=500, query=query, include_text=True,
+                             report_order_enabled=report_order_enabled)
         for event in page["items"]:
             if event["role"] == "user" and event["origin"] == "direct":
                 pos = event["text"].casefold().find(query.casefold())
