@@ -6,39 +6,53 @@ import uuid
 
 from .auto_core import REPLY_LENGTH_POLICY, latest_reply_length_on, reply_length
 from .journal import _evidence_source_on, evidence_for_claim, query_journal
+from .report_order import last_override_on, names_slot, visible_on
 from .store import NotFoundError, PersonalMemoryStore, utcnow_iso
 from .text_norm import query_terms, tokenize
 from .types import Actor
 from .validation import ValidationError
 
 
-def current_claims_on(store, conn, tenant, *, include_auto_core=True):
+def current_claims_on(store, conn, tenant, *, include_auto_core=True, include_report_order=False):
     """All authorized current facts, not an arbitrary recent-500 window."""
     now = utcnow_iso()
-    rows = conn.execute("""SELECT c.id AS claim_id,c.claim_kind,v.* FROM memory_claims c
+    rows = conn.execute("""SELECT c.id AS claim_id,c.claim_kind,v.*,r.claim_id IS NOT NULL AS report_order_owned
+        FROM memory_claims c
         JOIN memory_claim_versions v ON v.claim_id=c.id AND v.tenant_id=c.tenant_id
+        LEFT JOIN memory_report_order_slots r ON r.tenant_id=c.tenant_id AND r.claim_id=c.id
         WHERE c.tenant_id=? AND c.deleted_at IS NULL AND v.state='confirmed'
         AND v.sensitivity<>'restricted' AND (v.expires_at IS NULL OR v.expires_at>?)
         AND (v.valid_from IS NULL OR v.valid_from<=?) AND (v.valid_to IS NULL OR v.valid_to>?)
         AND v.version=(SELECT MAX(x.version) FROM memory_claim_versions x WHERE x.claim_id=c.id)
         ORDER BY v.created_at DESC,c.id""", (tenant, now, now, now)).fetchall()
-    out, automatic = [], []
+    out, automatic, report_order = [], [], []
+    explicit_at = last_override_on(conn, tenant) if include_report_order else None
+    explicit_report_order = False
     for row in rows:
         is_auto = row["change_reason"] == REPLY_LENGTH_POLICY
-        if is_auto and not include_auto_core:
+        is_report_order = row["report_order_owned"]
+        if (is_auto and not include_auto_core) or (is_report_order and not include_report_order):
             continue
         content, _ = store._decrypt_claim_fields(conn, tenant_id=tenant, claim_id=row["claim_id"], version_row=row)
         evidence = [dict(r) for r in conn.execute("SELECT source_id,source_version,span_start,span_end FROM memory_evidence WHERE tenant_id=? AND claim_id=? AND claim_version=?", (tenant, row["claim_id"], row["version"]))]
         item = {"claim_id": row["claim_id"], "version": row["version"], "claim_kind": row["claim_kind"],
                 "state": "confirmed", "content": content.decode("utf-8"), "created_at": row["created_at"],
                 "evidence": evidence}
-        (automatic if is_auto else out).append(item)
+        if is_report_order:
+            if visible_on(store, conn, tenant, row, evidence):
+                report_order.append(item)
+        else:
+            if include_report_order and item["claim_kind"] == "preference" and names_slot(item["content"]):
+                if explicit_at and item["created_at"] < explicit_at:
+                    continue
+                explicit_report_order = True
+            (automatic if is_auto else out).append(item)
     if out or not automatic:
         # Confirmed free-form facts have no typed conflict boundary.
-        return out
+        return out if explicit_report_order else out + report_order
     latest = latest_reply_length_on(store, conn, tenant)
     if latest is None or latest[1] is None:
-        return out
+        return out + report_order
     for item in automatic:
         if reply_length(item["content"]) != latest[1] or len(item["evidence"]) != 1:
             continue
@@ -53,20 +67,28 @@ def current_claims_on(store, conn, tenant, *, include_auto_core=True):
         if (event.get("whole_owner_turn") and event["occurred_at"] == latest[0] and event["role"] == "user"
                 and event["origin"] == "direct" and not event["attachments"]
                 and quote == event["text"] == item["content"]):
-            return [item]
-    return []
+            return [item, *report_order]
+    return report_order
 
 
-def _claims(actor, store):
+def _claims(actor, store, report_order_enabled=False):
+    if type(report_order_enabled) is not bool:
+        raise ValidationError("report_order_enabled: boolean required")
     with store._tx() as conn:
-        return current_claims_on(store, conn, store._ensure_principal_on(conn, actor))
+        return current_claims_on(store, conn, store._ensure_principal_on(conn, actor),
+                                 include_report_order=report_order_enabled and actor.platform == "bb")
 
 
-def build_core(actor: Actor, *, store: PersonalMemoryStore, char_budget: int = 1200) -> dict:
+def build_core(actor: Actor, *, store: PersonalMemoryStore, char_budget: int = 1200,
+               report_order_enabled: bool = False) -> dict:
     if type(char_budget) is not int or not 0 <= char_budget <= 12000:
         raise ValidationError("char_budget: 0..12000 required")
+    return _build_core(_claims(actor, store, report_order_enabled), char_budget)
+
+
+def _build_core(claims, char_budget):
     items, lines = [], []
-    for item in _claims(actor, store):
+    for item in claims:
         line = "- " + item["content"].replace("\n", " ")
         if len("\n".join(lines + [line])) <= char_budget:
             items.append(item)
@@ -129,14 +151,15 @@ def _neighbors(actor, store, seeds, current, max_nodes):
 
 
 def recall(actor: Actor, *, query: str, store: PersonalMemoryStore, token_budget: int = 4000,
-           limit: int = 20, include_journal: bool = False) -> dict:
+           limit: int = 20, include_journal: bool = False, report_order_enabled: bool = False) -> dict:
     if not isinstance(query, str) or not query.strip() or len(query) > 2000:
         raise ValidationError("query: nonempty string up to 2000 characters required")
     if type(token_budget) is not int or not 1 <= token_budget <= 32000 or type(limit) is not int or not 1 <= limit <= 500:
         raise ValidationError("recall budget: out of range")
-    core = build_core(actor, store=store, char_budget=min(1200, token_budget * 4))
+    claims = _claims(actor, store, report_order_enabled)
+    core = _build_core(claims, min(1200, token_budget * 4))
     used = math.ceil(len(core["text"]) / 4)
-    current = {c["claim_id"]: c for c in _claims(actor, store)}
+    current = {c["claim_id"]: c for c in claims}
     ranked = sorted((( _score(query, c["content"]), c) for c in current.values()), key=lambda pair: (-pair[0], pair[1]["claim_id"]))
     candidates = [{**c, "layer": "claim", "score": score} for score, c in ranked if score > 0]
     seeds = {c["claim_id"] for c in candidates[:3]}
@@ -145,10 +168,17 @@ def recall(actor: Actor, *, query: str, store: PersonalMemoryStore, token_budget
             candidates.append({**current[cid], "layer": "related_claim", "score": 0.0})
     from .consolidation import valid_projections
     for projection in valid_projections(actor, store=store):
-        score = _score(query, projection["text"])
+        text, evidence = projection["text"], projection["evidence"]
+        if report_order_enabled and any(claim_id not in current for claim_id in projection["claim_ids"]):
+            # Archived summaries cannot reintroduce an ordinary same-slot
+            # preference withheld from the active pilot view.
+            claim_ids = [claim_id for claim_id in projection["claim_ids"] if claim_id in current]
+            text = "\n".join("- " + current[claim_id]["content"] for claim_id in claim_ids)
+            evidence = {**evidence, "claims": [ref for ref in evidence["claims"] if ref[0] in current]}
+        score = _score(query, text)
         if score:
-            candidates.append({"layer": "summary", "content": projection["text"], "score": score,
-                               "period": projection["period"], "start": projection["start"], "evidence": projection["evidence"]})
+            candidates.append({"layer": "summary", "content": text, "score": score,
+                               "period": projection["period"], "start": projection["start"], "evidence": evidence})
     if include_journal:
         # Explicit bounded original opening; excludes assistant/forwarded text
         # from owner-fact retrieval. Today is searchable before consolidation.

@@ -141,6 +141,7 @@ def query_claims(
                     "JOIN memory_claim_versions v "
                     "ON v.claim_id = c.id AND v.tenant_id = c.tenant_id "
                     "WHERE c.tenant_id = ? AND c.deleted_at IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM memory_report_order_slots r WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id) "
                     "AND v.version = ("
                     "SELECT MAX(v2.version) FROM memory_claim_versions v2 "
                     "WHERE v2.claim_id = c.id"
@@ -291,6 +292,7 @@ def get_authorized_claim(
     *,
     include_content: bool = False,
     store: PersonalMemoryStore | None = None,
+    _allow_pilot_owner: bool = False,
 ) -> dict[str, object]:
     memory = _memory(store)
     pending_error: Exception | None = None
@@ -303,6 +305,11 @@ def get_authorized_claim(
             row = memory._lookup_claim(conn, tenant_id, claim_id)
             if row is not None and row["deleted_at"] is None:
                 newest = memory._newest_claim_version(conn, tenant_id, str(row["id"]))
+                if not _allow_pilot_owner and conn.execute(
+                    "SELECT 1 FROM memory_report_order_slots WHERE tenant_id=? AND claim_id=?",
+                    (tenant_id, claim_id),
+                ).fetchone():
+                    newest = None
         now = utcnow_iso()
         if (
             row is None

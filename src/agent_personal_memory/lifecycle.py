@@ -15,4 +15,5 @@ class MemoryState(str, Enum):
 
 ACTIVE_READ_STATES = frozenset({MemoryState.CANDIDATE, MemoryState.CONFIRMED})
 
-CHANGE_REASONS = frozenset({"created", "promoted", "changed", "retracted", "auto_core_reply_length"})
+CHANGE_REASONS = frozenset({"created", "promoted", "changed", "retracted", "auto_core_reply_length",
+                            "auto_core_report_order"})

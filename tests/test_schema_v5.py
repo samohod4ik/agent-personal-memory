@@ -321,10 +321,10 @@ class EmptyV4MigrationTests(unittest.TestCase):
     def test_opens_at_current_and_reopen_is_stable(self) -> None:
         self.assertEqual(_schema_version(self.db_path), 4)
         PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(_schema_version(self.db_path), 6)
+        self.assertEqual(_schema_version(self.db_path), 7)
         first = _catalog(self.db_path)
         PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(_schema_version(self.db_path), 6)
+        self.assertEqual(_schema_version(self.db_path), 7)
         self.assertEqual(_catalog(self.db_path), first)
         conn = sqlite3.connect(str(self.db_path))
         try:
@@ -398,7 +398,7 @@ class PopulatedV4MigrationTests(unittest.TestCase):
         _downgrade_to_v4(self.db_path)
         self.assertEqual(_schema_version(self.db_path), 4)
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(_schema_version(self.db_path), 6)
+        self.assertEqual(_schema_version(self.db_path), 7)
         first = _catalog(self.db_path)
         PersonalMemoryStore(data_dir=self.data_dir)
         self.assertEqual(_catalog(self.db_path), first)

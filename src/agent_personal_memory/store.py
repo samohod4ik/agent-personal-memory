@@ -60,7 +60,7 @@ from .validation import (
 
 logger = logging.getLogger("plugins.personal-memory")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _CREATE_SCHEMA_SQL = (
     """
@@ -356,6 +356,7 @@ AUDIT_REASONS = frozenset(
         "confirmation_required",
         "invalid_transition",
         "auto_core_reply_length",
+        "auto_core_report_order",
     }
 )
 
@@ -479,6 +480,10 @@ class PersonalMemoryStore:
                 if current < 6:
                     from .layered_store import SCHEMA
                     for statement in SCHEMA:
+                        conn.execute(statement)
+                if current < 7:
+                    from .layered_store import REPORT_ORDER_SCHEMA
+                    for statement in REPORT_ORDER_SCHEMA:
                         conn.execute(statement)
                 if current < self.SCHEMA_VERSION:
                     conn.execute(
@@ -1163,7 +1168,7 @@ class PersonalMemoryStore:
         return conn.execute(
             "SELECT id, claim_id, tenant_id, version, state, sensitivity, "
             "content_enc, confidence, explanation_enc, valid_from, valid_to, "
-            "expires_at, supersedes_id, created_at "
+            "expires_at, supersedes_id, created_at, change_reason "
             "FROM memory_claim_versions "
             "WHERE claim_id = ? AND tenant_id = ? "
             "ORDER BY version DESC LIMIT 1",
@@ -2038,6 +2043,7 @@ class PersonalMemoryStore:
                 "JOIN memory_claim_versions v "
                 "ON v.claim_id = c.id AND v.tenant_id = c.tenant_id "
                 "WHERE c.tenant_id = ? AND c.deleted_at IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM memory_report_order_slots r WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id) "
                 "AND v.version = ("
                 "SELECT MAX(v2.version) FROM memory_claim_versions v2 "
                 "WHERE v2.claim_id = c.id"
@@ -3001,6 +3007,8 @@ class PersonalMemoryStore:
         from .fts_index import delete_claim_fts_rows
 
         now = utcnow_iso()
+        from .report_order import forget_claim_on
+        forget_claim_on(conn, tenant_id, claim_id, now)
         from .journal import erase_evidence_on
         if _redact_sources:
             erase_evidence_on(self, conn, tenant_id, claim_id, now)

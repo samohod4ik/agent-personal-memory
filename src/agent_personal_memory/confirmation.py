@@ -360,7 +360,7 @@ def bind_targets(
     targets: list[BoundTarget] = []
     items: list[dict[str, object]] = []
     for claim_id in claim_ids:
-        row = get_authorized_claim(actor, claim_id, include_content=True, store=store)
+        row = get_authorized_claim(actor, claim_id, include_content=True, store=store, _allow_pilot_owner=True)
         if require_state is not None and str(row.get("state")) != require_state:
             raise ValidationError("claim: not a candidate")
         content = row.get("content")

@@ -65,13 +65,19 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 session_id: str = "", attachments: tuple[str, ...] = (),
                 parent_source_id: str | None = None, parent_source_version: int | None = None,
                 policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None,
-                reconcile: bool = False, whole_owner_turn: bool = False) -> dict:
+                reconcile: bool = False, whole_owner_turn: bool = False,
+                report_order_enabled: bool = False, report_order_scope: str | None = None,
+                report_order_task_id: str | None = None, report_order_context: str | None = None) -> dict:
     if type(reconcile) is not bool:
         raise ValidationError("reconcile: boolean required")
     if type(whole_owner_turn) is not bool or (whole_owner_turn and (role != "user" or origin != "direct")):
         raise ValidationError("whole_owner_turn: direct owner capture attestation required")
     if not isinstance(policy, CapturePolicy):
         raise ValidationError("policy: CapturePolicy required")
+    if type(report_order_enabled) is not bool:
+        raise ValidationError("report_order_enabled: boolean required")
+    if report_order_context is not None and report_order_context != "failed_test_report":
+        raise ValidationError("report_order_context: unsupported context")
     if not policy.enabled:
         return {"status": "skipped", "reason": "capture_disabled"}
     _text(event_id, "event_id", 512)
@@ -118,6 +124,12 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
         metadata["action_receipt"] = json.dumps(action_receipt, ensure_ascii=False, sort_keys=True)
     if whole_owner_turn:
         metadata["whole_owner_turn"] = "1"
+    if (report_order_enabled and actor.platform == "bb" and whole_owner_turn
+            and not attachments and report_order_scope == "personal"
+            and report_order_task_id is not None):
+        metadata["report_order_task_id"] = _text(report_order_task_id, "report_order_task_id", 512)
+        if report_order_context:
+            metadata["report_order_context"] = report_order_context
     envelope = hashlib.sha256(encode([text, metadata, occurred_at, expires])).hexdigest()
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
@@ -199,7 +211,16 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 fields={"snapshot": text.encode("utf-8"), "external_ref": event_id, "metadata": metadata,
                         "content_hash": content_hash_for(text.encode("utf-8")), "observed_at": occurred_at, "retention_class": "standard"}, now=utcnow_iso())
         conn.execute("INSERT INTO memory_capture_generation VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET generation=excluded.generation", (sid, tenant, generation_on(conn, tenant)))
-        return {"status": "recorded", "source_id": sid, "version": version, "source_version_id": vid}
+        result = {"status": "recorded", "source_id": sid, "version": version, "source_version_id": vid}
+        if "report_order_task_id" in metadata:
+            from .report_order import record_correction_on
+            decision = record_correction_on(
+                store, conn, tenant, sid, version, occurred_at, text,
+                task_context=report_order_context is not None,
+            )
+            if decision is not None:
+                result["report_order"] = decision
+        return result
 
 
 def get_journal_event(actor: Actor, *, event_id: str, store: PersonalMemoryStore) -> dict | None:
@@ -255,7 +276,7 @@ def journal_rows_on(store, conn, tenant):
         ORDER BY j.occurred_at,j.source_id""", (tenant, utcnow_iso())).fetchall()
 
 
-def event_on(store, conn, tenant, row):
+def event_on(store, conn, tenant, row, *, include_report_order_context=False):
     text, _, metadata = store._decrypt_version(conn, tenant, row["source_id"], row)
     return {"source_id": row["source_id"], "version": row["version"], "occurred_at": row["occurred_at"],
             "text": text.decode("utf-8"), "role": metadata.get("role"), "origin": metadata.get("origin"),
@@ -264,6 +285,9 @@ def event_on(store, conn, tenant, row):
             "parent_source_version": int(metadata["parent_source_version"]) if metadata.get("parent_source_version") else None,
             "attachments": json.loads(metadata.get("attachments", "[]")),
             **({"whole_owner_turn": True} if metadata.get("whole_owner_turn") == "1" else {}),
+            **({"report_order_task_id": metadata.get("report_order_task_id"),
+                "report_order_context": metadata.get("report_order_context"), "expires_at": row["expires_at"]}
+               if include_report_order_context else {}),
             "action_receipt": json.loads(metadata["action_receipt"]) if metadata.get("action_receipt") else None}
 
 
@@ -295,7 +319,8 @@ def query_journal(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50,
     return {"items": items, "next_cursor": last if more else None}
 
 
-def _evidence_source_on(store, conn, tenant, source_id, source_version, start, end, *, require_unredacted=False):
+def _evidence_source_on(store, conn, tenant, source_id, source_version, start, end, *,
+                        require_unredacted=False, include_report_order_context=False):
     row = conn.execute("""SELECT j.*,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc
         FROM memory_journal j JOIN memory_source_versions v ON v.source_id=j.source_id AND v.tenant_id=j.tenant_id
         JOIN memory_sources s ON s.id=j.source_id WHERE j.tenant_id=? AND j.source_id=? AND v.version=?
@@ -304,7 +329,7 @@ def _evidence_source_on(store, conn, tenant, source_id, source_version, start, e
         (tenant, source_id, source_version, utcnow_iso(), require_unredacted)).fetchone()
     if row is None:
         raise NotFoundError("Evidence not found")
-    event = event_on(store, conn, tenant, row)
+    event = event_on(store, conn, tenant, row, include_report_order_context=include_report_order_context)
     if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(event["text"]):
         raise ValidationError("evidence: invalid character span")
     return event, event["text"][start:end]
@@ -385,12 +410,14 @@ def candidate_from_evidence_on(store, conn, tenant, proposal):
     store._append_audit(conn, tenant_id=tenant, actor_id=tenant, action="claim.create_candidate", target_kind="claim", target_id=cid, outcome="created", policy_reason="")
     return {"claim_id": cid, "claim_version_id": vid, "version": 1, "state": "candidate"}
 
-def evidence_for_claim(actor: Actor, claim_id: str, *, store: PersonalMemoryStore, max_chars: int = 2000) -> list[dict]:
+def evidence_for_claim(actor: Actor, claim_id: str, *, store: PersonalMemoryStore, max_chars: int = 2000,
+                       report_order_enabled: bool = False) -> list[dict]:
     """Explicitly open bounded originals; ordinary recall returns pointers only."""
     if type(max_chars) is not int or not 1 <= max_chars <= 8000:
         raise ValidationError("max_chars: 1..8000 required")
     from .query import get_authorized_claim
-    claim = get_authorized_claim(actor, claim_id, include_content=False, store=store)
+    claim = get_authorized_claim(actor, claim_id, include_content=False, store=store,
+                                 _allow_pilot_owner=report_order_enabled and actor.platform == "bb")
     if claim["state"] != "confirmed":
         return []
     results, used = [], 0

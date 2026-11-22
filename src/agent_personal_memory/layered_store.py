@@ -57,6 +57,27 @@ SCHEMA = (
         FOREIGN KEY(to_claim_id) REFERENCES memory_claims(id))""",
 )
 
+REPORT_ORDER_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS memory_report_order_slots (
+        tenant_id TEXT PRIMARY KEY, claim_id TEXT, direction TEXT, cutoff_at TEXT NOT NULL,
+        action_source TEXT, direct_at TEXT, FOREIGN KEY(claim_id) REFERENCES memory_claims(id))""",
+    """CREATE TABLE IF NOT EXISTS memory_report_order_votes (
+        tenant_id TEXT NOT NULL, source_id TEXT NOT NULL, source_version INTEGER NOT NULL,
+        span_start INTEGER NOT NULL, span_end INTEGER NOT NULL, direction TEXT NOT NULL,
+        PRIMARY KEY(tenant_id,source_id,source_version),
+        FOREIGN KEY(source_id) REFERENCES memory_sources(id))""",
+    """CREATE TABLE IF NOT EXISTS memory_report_order_attempts (
+        tenant_id TEXT NOT NULL, job_key TEXT NOT NULL, owner TEXT NOT NULL,
+        start TEXT NOT NULL, timezone TEXT NOT NULL, deadline REAL NOT NULL,
+        eligible_sources INTEGER NOT NULL, state TEXT NOT NULL, cli TEXT, model TEXT,
+        PRIMARY KEY(tenant_id,job_key))""",
+    """CREATE TRIGGER IF NOT EXISTS clear_redacted_report_order_votes
+        AFTER UPDATE OF redacted ON memory_journal WHEN new.redacted=1
+        BEGIN
+            DELETE FROM memory_report_order_votes WHERE tenant_id=new.tenant_id AND source_id=new.source_id;
+        END""",
+)
+
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

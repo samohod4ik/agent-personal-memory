@@ -85,7 +85,7 @@ def _preview_claim(
     language: str,
     store: PersonalMemoryStore,
 ) -> dict[str, object]:
-    row = get_authorized_claim(actor, claim_id, store=store)
+    row = get_authorized_claim(actor, claim_id, store=store, _allow_pilot_owner=True)
     summary = format_claim_summary(row, language=language)
     return {
         "language": language,
@@ -105,7 +105,7 @@ def _resolve_do_not_remember_targets(
     store: PersonalMemoryStore,
 ) -> list[str]:
     if target_id is not None:
-        get_authorized_claim(actor, target_id, store=store)
+        get_authorized_claim(actor, target_id, store=store, _allow_pilot_owner=True)
         return [target_id]
     assert phrase is not None
     rows = query_claims(actor, include_content=True, limit=500, store=store)
@@ -229,7 +229,7 @@ def forget_personal_memory(
     lang = normalize_language(language)
     memory = store
     claim = _require_claim_id(claim_id)
-    get_authorized_claim(actor, claim, store=memory)
+    get_authorized_claim(actor, claim, store=memory, _allow_pilot_owner=True)
     return create_delete_preview(
         actor,
         action="forget_personal_memory",

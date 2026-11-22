@@ -295,3 +295,27 @@ values at the same timestamp leave the slot empty. The confirmation expires
 with its journal evidence. Imported, contextual and attached turns remain
 ineligible. Current free-form confirmations take precedence over the entire
 pilot slot because the store has no reliable scope information for those facts.
+
+### Failed-test report order pilot
+
+Use `report_order_enabled=True` on capture, closed-day consolidation, core, and
+recall in a disposable BB candidate. Defaults stay off. The trusted intake uses
+`whole_owner_turn=True`, `report_order_scope="personal"` and a stable
+`report_order_task_id` distinct across independent tasks. It may attach
+`report_order_context="failed_test_report"` when it verified the surrounding
+report. This context qualifies short corrections such as “Теперь начинай с
+причины.” An explicit correction or withdrawal commits with its source and is
+visible on the next read, even without the judge.
+
+The judge cites eligible complete owner turns by source ID, version and
+character span. Two independent votes can confirm a normalized preference or
+reverse it. A single opposite vote and one-off instructions preserve the current
+habit. Core and recall revalidate live proof on every read. The ordinary claim
+list excludes the pilot item. The owner can forget it by claim ID through the
+existing confirmation flow.
+
+A paid attempt with no receipt remains reserved until the earlier of 24 hours
+or expiry of its eligible sources. It then closes as `uncredited` with its
+attempt ID, provider label when supplied, and unknown cost. The worker admits
+later independent closed days. A late arrival assigned to the same abandoned
+day is recorded but remains unjudged under that day’s existing admission.
