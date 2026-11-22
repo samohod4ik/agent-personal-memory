@@ -1,6 +1,8 @@
 """The gated BB report-order policy uses versioned accepted sources."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
@@ -207,13 +209,14 @@ class ReportOrderTests(TestCase):
         item, = self.check_value(COMMAND)
         self.store.erase_claim(self.actor, item["claim_id"])
         self.check_value(None)
-        self.assertEqual(self.judge(0)["status"], "completed")
+        self.assertEqual(self.judge(0)["usage"]["calls"], 0)
         self.check_value(None)
         self.assertEqual(self.capture("task-1", 0)["status"], "forgotten")
         self.assertEqual(len(sources), 2)
 
     def test_v6_store_migrates_and_can_learn(self):
         with self.store._tx() as conn:
+            conn.execute("DROP TABLE memory_report_order_admitted_sources")
             conn.execute("DROP TRIGGER clear_redacted_report_order_votes")
             for name in ("slots", "votes", "attempts"):
                 conn.execute(f"DROP TABLE memory_report_order_{name}")
@@ -306,7 +309,6 @@ class ReportOrderTests(TestCase):
             self.assertEqual(outcome["provider_cost"], "unknown")
             self.assertEqual(outcome["attempt_id"], pending["attempt_id"])
             self.assertEqual(outcome["judge"], {"cli": "codex", "model": "test-fixture"})
-            self.capture("late-closed-day", 0)
             self.assertEqual(lost()["status"], "uncredited")
         self.assertEqual(calls, 1)
         self.store = apm.PersonalMemoryStore(self.store.data_dir)
@@ -315,3 +317,186 @@ class ReportOrderTests(TestCase):
         self.assertEqual(apm.report_order_uncredited_attempts(other, store=self.store), [])
         self.judge(2)
         self.check_value(COMMAND)
+
+    def test_uncredited_day_only_admits_later_disjoint_sources_across_restarts(self):
+        self.learn()
+        old = self.capture("abandoned", 5, "Put the test command before the explanation.", minute=1)
+        old_context = self.capture(
+            "abandoned-context", 5, "Old assistant context must not enter another attempt.", minute=2,
+            role="assistant", origin="derived", whole_owner_turn=False,
+            parent_source_id=old["source_id"], parent_source_version=old["version"],
+        )
+        start = (self.day + timedelta(days=5)).isoformat()
+        sent = []
+
+        def run(expected, *, unknown=False, kind="command_first", provider=("codex", "repair")):
+            def adapter(request):
+                sent.append(request)
+                self.assertEqual([row["source_id"] for row in request["events"]], expected)
+                if unknown:
+                    raise TimeoutError
+                return {
+                    "report_order_observations": [
+                        {"source_id": row["source_id"], "source_version": row["version"],
+                         "start": 0, "end": len(row["text"]), "kind": kind}
+                        for row in request["events"] if row.get("report_order_eligible")
+                    ],
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+
+            return apm.consolidate_period(
+                self.actor, period="day", start=start, store=self.store, adapter=adapter,
+                report_order_enabled=True, report_order_provider=provider,
+            )
+
+        def reopen():
+            self.store = apm.PersonalMemoryStore(self.store.data_dir)
+
+        def assert_queued():
+            periods = apm.pending_periods(
+                self.actor, store=self.store, limit=8, closed_only=True, report_order_enabled=True,
+            )
+            self.assertIn({"period": "day", "start": start}, periods)
+
+        first = run([old["source_id"], old_context["source_id"]], unknown=True, provider=("codex", "original"))
+        self.assertEqual(first["model_attempt"]["status"], "uncertain")
+        self.assertEqual(first["usage"]["calls"], 1)
+        future = consolidation.time.time() + 86401
+        with patch.object(consolidation.time, "time", return_value=future):
+            reopen()
+            original = run([])
+            self.assertEqual(original["status"], "uncredited")
+            self.assertEqual(original["attempt_id"], first["attempt_id"])
+            self.assertEqual(original["judge"], {"cli": "codex", "model": "original"})
+            self.assertEqual(original["admitted_input_bytes"], first["usage"]["input_tokens"])
+            self.assertEqual(original["usage"]["calls"], 0)
+            self.assertEqual(run([]), original)
+
+            self.capture("revoke", 5, "Stop putting the command first in failed-test reports.", minute=5)
+            self.capture("abandoned", 5, "Revised old source cannot be re-admitted.", minute=1)
+            self.capture(
+                "abandoned-followup", 5, "Late reply can quote the abandoned prompt.", minute=3,
+                role="assistant", origin="derived", whole_owner_turn=False,
+                parent_source_id=old["source_id"], parent_source_version=old["version"] + 1,
+            )
+            late = self.capture("pre-revocation-late", 5, "Give the command first in this failure.", minute=4)
+            reopen()
+            assert_queued()
+            fresh = run([late["source_id"]])
+            self.assertEqual(fresh["status"], "completed")
+            self.assertNotEqual(fresh["attempt_id"], original["attempt_id"])
+            self.assertEqual(run([])["usage"]["calls"], 0)
+            self.check_value(None)
+
+            lost_again = self.capture("second-lost", 5, "Show the cause first in the report.", minute=6)
+            assert_queued()
+            second = run([lost_again["source_id"]], unknown=True)
+            self.assertEqual(second["model_attempt"]["status"], "uncertain")
+
+        with patch.object(consolidation.time, "time", return_value=future + 86401):
+            reopen()
+            second_receipt = run([])
+            self.assertEqual(second_receipt["status"], "uncredited")
+            self.assertEqual(second_receipt["attempt_id"], second["attempt_id"])
+            late_a = self.capture("fresh-a", 5, "Show the cause before the reproduction command.", minute=7)
+            late_b = self.capture("fresh-b", 5, "Lead the report with the diagnosis.", minute=8)
+            reopen()
+            assert_queued()
+            self.assertEqual(run([late_a["source_id"], late_b["source_id"]], kind="cause_first")["status"], "completed")
+            self.assertEqual(run([])["usage"]["calls"], 0)
+            self.check_value(CAUSE)
+
+        reopen()
+        self.assertEqual(len(sent), 4)
+        receipts = apm.report_order_uncredited_attempts(self.actor, store=self.store)
+        self.assertCountEqual(receipts, [original, second_receipt])
+
+    def test_v7_uncredited_day_keeps_receipt_and_fences_existing_context(self):
+        old = self.capture("legacy-old", 2)
+        pre_migration = self.capture("legacy-unknown-membership", 2, minute=1)
+        start = (self.day + timedelta(days=2)).isoformat()
+        with self.store._tx() as conn:
+            tenant = self.store._ensure_principal_on(conn, self.actor)
+            conn.execute("DROP TABLE memory_report_order_admitted_sources")
+            conn.execute("UPDATE memory_schema SET version=7")
+            conn.execute("ALTER TABLE memory_report_order_attempts DROP COLUMN admitted_input_bytes")
+            conn.execute("INSERT INTO memory_report_order_attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (tenant, "legacy-day-key", "legacy-attempt", start, "UTC", 0, 1, "uncredited", "legacy", "retained"))
+
+        self.store = apm.PersonalMemoryStore(self.store.data_dir)
+        receipt, = apm.report_order_uncredited_attempts(self.actor, store=self.store)
+        self.assertEqual(receipt["attempt_id"], "legacy-attempt")
+        self.assertEqual(receipt["judge"], {"cli": "legacy", "model": "retained"})
+        fresh = self.capture("after-migration", 2, minute=2)
+        seen = []
+
+        def judge(request):
+            seen.extend(event["source_id"] for event in request["events"])
+            return {"usage": {"input_tokens": 1, "output_tokens": 1}}
+
+        result = apm.consolidate_period(self.actor, period="day", start=start, store=self.store,
+                                        adapter=judge, report_order_enabled=True)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(seen, [fresh["source_id"]])
+        self.assertNotIn(old["source_id"], seen)
+        self.assertNotIn(pre_migration["source_id"], seen)
+        self.assertEqual(apm.report_order_uncredited_attempts(self.actor, store=self.store), [receipt])
+
+    def test_process_exit_after_admission_keeps_old_source_fenced(self):
+        start = self.day.isoformat()
+        old = self.capture("before-process-exit", 0)
+        process = subprocess.run([
+            sys.executable, "-c", """
+import os
+from sys import argv
+from agent_personal_memory import Actor, PersonalMemoryStore, consolidate_period
+
+def crash_after_admission(request):
+    assert [event["source_id"] for event in request["events"]] == [argv[3]]
+    os._exit(73)
+
+consolidate_period(Actor("bb", "dev-owner"), period="day", start=argv[2],
+                   store=PersonalMemoryStore(argv[1]), adapter=crash_after_admission,
+                   report_order_enabled=True, report_order_provider=("codex", "crash-fixture"))
+""", str(self.store.data_dir), start, old["source_id"],
+        ], capture_output=True, text=True, timeout=15, check=False)
+        self.assertEqual(process.returncode, 73, process.stderr)
+
+        self.store = apm.PersonalMemoryStore(self.store.data_dir)
+        seen = []
+
+        def judge(request):
+            seen.extend(event["source_id"] for event in request["events"])
+            return {"usage": {"input_tokens": 1, "output_tokens": 1}}
+
+        kwargs = {"period": "day", "start": start, "store": self.store, "adapter": judge,
+                  "report_order_enabled": True}
+        added = self.capture("after-process-exit", 0, minute=2)
+        self.assertEqual(apm.consolidate_period(self.actor, **kwargs)["status"], "pending")
+        self.assertEqual(seen, [])
+        future = consolidation.time.time() + 86401
+        with patch.object(consolidation.time, "time", return_value=future):
+            terminal = apm.consolidate_period(self.actor, **kwargs)
+            self.assertEqual(terminal["status"], "uncredited")
+            self.assertEqual(terminal["judge"], {"cli": "codex", "model": "crash-fixture"})
+            self.assertEqual(apm.consolidate_period(self.actor, **kwargs)["status"], "completed")
+        self.assertEqual(seen, [added["source_id"]])
+
+    def test_pilot_parent_periods_use_local_aggregation(self):
+        self.capture("ignored-parent-input", 0)
+        self.assertEqual(self.judge(0)["status"], "completed")
+        days = {
+            "week": self.day - timedelta(days=self.day.weekday()),
+            "month": self.day.replace(day=1),
+            "year": self.day.replace(month=1, day=1),
+        }
+        seen = []
+        for period, day in days.items():
+            projected = apm.consolidate_period(
+                self.actor, period=period, start=day.isoformat(), store=self.store,
+                adapter=lambda request: seen.append(request), report_order_enabled=True,
+            )
+            self.assertEqual(projected["status"], "completed")
+            self.assertEqual(projected["usage"]["calls"], 0)
+            self.assertEqual(projected["projection"]["method"], "extractive")
+        self.assertEqual(seen, [])

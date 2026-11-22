@@ -484,7 +484,7 @@ class LayeredMemoryTests(unittest.TestCase):
         reopened = apm.PersonalMemoryStore(self.tmp.name)
         self.assertEqual(reopened.get_source(ALICE, event["source_id"])["snapshot"], b"A very unique private memory phrase.")
         with closing(reopened._connect()) as conn:
-            self.assertEqual(conn.execute("SELECT version FROM memory_schema").fetchone()[0], 7)
+            self.assertEqual(conn.execute("SELECT version FROM memory_schema").fetchone()[0], 8)
 
 
 if __name__ == "__main__":

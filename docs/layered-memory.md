@@ -316,6 +316,18 @@ existing confirmation flow.
 
 A paid attempt with no receipt remains reserved until the earlier of 24 hours
 or expiry of its eligible sources. It then closes as `uncredited` with its
-attempt ID, provider label when supplied, and unknown cost. The worker admits
-later independent closed days. A late arrival assigned to the same abandoned
-day is recorded but remains unjudged under that day’s existing admission.
+attempt ID, provider label when supplied, and unknown cost. The ledger retains
+the admitted request's UTF-8 size as a bound, separately from provider usage.
+
+The worker can admit later independent corrections on a closed day in new
+batches. It reserves every source ID and version supplied to each adapter call,
+including supporting context, before invoking the provider. A later batch for
+that day contains only newly eligible direct corrections. Prior originals,
+their edits, prior facts and assistant context stay out of the new request.
+Terminal receipts persist for every batch. Week, month and year views
+aggregate locally while the pilot is active.
+
+Schema 7 recorded attempts without exact membership. On upgrade, the engine
+fences every existing journal source that overlaps a schema 7 attempt's day.
+This includes older revisions and may exclude sources delivered after the old
+attempt but before the upgrade. Later-captured sources use the new ledger.

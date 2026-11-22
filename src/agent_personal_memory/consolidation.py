@@ -122,11 +122,14 @@ def _projection_on(store, conn, tenant, data):
     return None
 
 
-def _review_events_on(store, conn, tenant, rows, *, adapter, budget, deadline, report_order_enabled=False):
+def _review_events_on(store, conn, tenant, rows, *, adapter, budget, deadline,
+                      report_order_enabled=False, only_report_order=False):
     # Ciphertext length bounds plaintext before opening it. JSON escaping may
     # expand an admitted event, but only these bounded bytes can be decrypted.
     # Never materialize ordinary transcripts for the free receipt-only path.
     eligible = [r for r in rows if adapter is not None or r["source_kind"] == "tool_result"]
+    if only_report_order:
+        eligible = [r for r in eligible if r["source_kind"] == "auto_insight_turn" and not r["redacted"]]
     remaining_plain = remaining_encoded = min(budget.max_input_tokens, 65536)
     events = []
     opened = 0
@@ -144,6 +147,8 @@ def _review_events_on(store, conn, tenant, rows, *, adapter, budget, deadline, r
         event.pop("expires_at", None)
         if not row["redacted"] and report_order_eligible(task, event["text"]):
             event["report_order_eligible"] = True
+        if only_report_order and not event.get("report_order_eligible"):
+            continue
         if not ((event["role"] == "user" and event["origin"] == "direct") or event["role"] == "assistant" or event.get("action_receipt")):
             continue
         size = len(encode(event))
@@ -171,8 +176,8 @@ def _release_admission(store, tenant, key, owner, fingerprint):
             "WHERE tenant_id=? AND job_key=? AND owner=? AND fingerprint=? AND state='running'",
             (tenant, key, owner, fingerprint),
         )
-        conn.execute("DELETE FROM memory_report_order_attempts WHERE tenant_id=? AND job_key=? AND owner=?",
-                     (tenant, key, owner))
+        conn.execute("DELETE FROM memory_report_order_attempts WHERE tenant_id=? AND owner=?",
+                     (tenant, owner))
 
 
 def _attempt_identity(attempt_id, provider):
@@ -183,18 +188,23 @@ def _attempt_identity(attempt_id, provider):
 
 
 def _uncredited_result(row):
-    return {"status": "uncredited", "reason": "provider_receipt_deadline", "period": "day",
-            "start": row["start"], "timezone": row["timezone"],
-            "model_attempt": {"status": "uncertain"}, "provider_cost": "unknown",
-            "eligible_source_count": row["eligible_sources"], "usage": {"calls": 0},
-            **_attempt_identity(row["owner"], (row["cli"], row["model"]))}
+    result = {"status": "uncredited", "reason": "provider_receipt_deadline", "period": "day",
+              "start": row["start"], "timezone": row["timezone"],
+              "model_attempt": {"status": "uncertain"}, "provider_cost": "unknown",
+              "eligible_source_count": row["eligible_sources"], "usage": {"calls": 0},
+              **_attempt_identity(row["owner"], (row["cli"], row["model"]))}
+    if row["admitted_input_bytes"] is not None:
+        result["admitted_input_bytes"] = row["admitted_input_bytes"]
+    return result
 
 
-def _unsettled_report_order_on(conn, tenant, key):
-    row = conn.execute("SELECT * FROM memory_report_order_attempts WHERE tenant_id=? AND job_key=?",
-                       (tenant, key)).fetchone()
-    if row is None:
-        return None
+def _report_order_attempt_on(conn, tenant, start, timezone):
+    return conn.execute("""SELECT * FROM memory_report_order_attempts
+        WHERE tenant_id=? AND start=? AND timezone=?
+        ORDER BY (state='admitted') DESC,rowid DESC LIMIT 1""", (tenant, start, timezone)).fetchone()
+
+
+def _unsettled_report_order_on(conn, tenant, row):
     identity = _attempt_identity(row["owner"], (row["cli"], row["model"]))
     if row["state"] == "rejected":
         return {"status": "rejected", "reason": "prior_provider_result_rejected",
@@ -202,9 +212,37 @@ def _unsettled_report_order_on(conn, tenant, key):
     if row["state"] == "admitted" and time.time() < row["deadline"]:
         return {"status": "pending", "reason": "uncertain_provider_outcome",
                 "model_attempt": {"status": "uncertain"}, "provider_cost": "unknown", **identity}
-    conn.execute("UPDATE memory_report_order_attempts SET state='uncredited' WHERE tenant_id=? AND job_key=?",
-                 (tenant, key))
+    conn.execute("UPDATE memory_report_order_attempts SET state='uncredited' WHERE tenant_id=? AND owner=?",
+                 (tenant, row["owner"]))
     return _uncredited_result(row)
+
+
+def _admitted_sources_on(conn, tenant):
+    return {row[0] for row in conn.execute("""WITH RECURSIVE admitted(source_id) AS (
+        SELECT source_id FROM memory_report_order_admitted_sources WHERE tenant_id=?
+        UNION
+        SELECT l.source_id FROM memory_source_lineage l JOIN admitted a ON a.source_id=l.parent_source_id
+        WHERE l.tenant_id=?
+    ) SELECT source_id FROM admitted""", (tenant, tenant))}
+
+
+def _report_order_refs(events, facts):
+    refs = {(event["source_id"], event["version"]) for event in events}
+    refs.update((event["parent_source_id"], event["parent_source_version"])
+                for event in events if event["parent_source_id"] is not None)
+    refs.update((proof["source_id"], proof["source_version"])
+                for fact in facts for proof in fact["evidence"])
+    return refs
+
+
+def _has_fresh_report_order_input_on(store, conn, tenant, rows, admitted):
+    for row in rows:
+        if row["source_id"] in admitted or row["redacted"] or row["source_kind"] != "auto_insight_turn":
+            continue
+        event = event_on(store, conn, tenant, row, include_report_order_context=True)
+        if report_order_eligible(event["report_order_task_id"], event["text"]):
+            return True
+    return False
 
 
 def report_order_uncredited_attempts(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50) -> list[dict]:
@@ -243,20 +281,31 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
     beginning = time.monotonic()
     owner = str(uuid.uuid4())
     key = hashlib.sha256(encode([period, start, timezone])).hexdigest()
-    report_order_enabled = report_order_enabled and actor.platform == "bb" and period == "day"
+    pilot = report_order_enabled and actor.platform == "bb"
+    report_order_enabled = pilot and period == "day"
+    if pilot and period != "day":
+        # Higher periods aggregate locally. Their broader windows include
+        # originals already admitted by an independent day's judge.
+        adapter = None
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
-        if report_order_enabled:
-            unsettled = _unsettled_report_order_on(conn, tenant, key)
-            if unsettled is not None:
-                return unsettled
+        prior_attempt = _report_order_attempt_on(conn, tenant, start, timezone) if actor.platform == "bb" and period == "day" else None
+        if prior_attempt is not None and prior_attempt["state"] == "admitted":
+            return _unsettled_report_order_on(conn, tenant, prior_attempt)
+        if prior_attempt is not None and not report_order_enabled:
+            adapter = None
         data = _input_on(store, conn, tenant, period, start, timezone)
         if report_order_enabled and data["bounds"][1] > utcnow_iso():
             return {"status": "pending", "reason": "period_open"}
+        admitted_sources = _admitted_sources_on(conn, tenant) if adapter is not None and actor.platform == "bb" else set()
+        reopened = report_order_enabled and prior_attempt is not None
+        fresh_report_order = reopened and adapter is not None and _has_fresh_report_order_input_on(
+            store, conn, tenant, data["_rows"], admitted_sources,
+        )
         existing = _projection_on(store, conn, tenant, data)
         prior = conn.execute("SELECT * FROM memory_jobs WHERE tenant_id=? AND job_key=?", (tenant, key)).fetchone()
         prior_admitted = bool(prior and prior["calls"] and prior["fingerprint"] == data["fingerprint"])
-        if existing is not None:
+        if existing is not None and not fresh_report_order:
             revisit = upgrade_extractive or (recover_extractive and prior_admitted)
             if not (revisit and _can_review_extractive(existing)):
                 return {"status": "cached", "projection": existing, "usage": {"calls": 0, "input_tokens": 0, "output_tokens": 0}}
@@ -266,12 +315,23 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             return {"status": "pending", "reason": "recovery_input_changed"}
         # A stale lease after a paid call is an uncertain outcome; explicit host
         # retry requires a changed input. Never automatically charge it twice.
-        if prior_admitted and not recover_extractive:
+        if prior_admitted and not recover_extractive and prior_attempt is None:
             return {"status": "pending", "reason": "uncertain_provider_outcome"}
-        previous_usage = {k: prior[k] if prior_admitted else 0 for k in ("calls", "input_tokens", "output_tokens")}
-        data["events"], review_coverage = _review_events_on(store, conn, tenant, data["_rows"],
+        previous_usage = {k: prior[k] if prior_admitted and prior_attempt is None else 0
+                          for k in ("calls", "input_tokens", "output_tokens")}
+        review_rows = [row for row in data["_rows"] if row["source_id"] not in admitted_sources]
+        if reopened and not fresh_report_order:
+            if prior_attempt["state"] in {"uncredited", "rejected"}:
+                return _unsettled_report_order_on(conn, tenant, prior_attempt)
+            return {"status": "skipped", "reason": "no_new_report_order_sources", "usage": {"calls": 0}}
+        data["events"], review_coverage = _review_events_on(store, conn, tenant, review_rows,
             adapter=adapter, budget=budget, deadline=beginning + budget.max_seconds,
-            report_order_enabled=report_order_enabled)
+            report_order_enabled=report_order_enabled, only_report_order=reopened)
+        if reopened and not data["events"]:
+            return {"status": "budget_exhausted", "reason": "fresh_report_order_input", "usage": {"calls": 0}}
+        if adapter is not None:
+            data["facts"] = [] if reopened else [fact for fact in data["facts"]
+                if not any(proof["source_id"] in admitted_sources for proof in fact["evidence"])]
         data["coverage"].update(review_coverage)
         conn.execute("INSERT OR REPLACE INTO memory_jobs VALUES(?,?,?,?,?,?,?,?,?)",
                      (tenant, key, data["fingerprint"], "running", time.time() + budget.max_seconds + 5,
@@ -308,6 +368,13 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             if time.monotonic() - beginning >= budget.max_seconds:
                 return {"status": "pending", "reason": "deadline_before_admission", "usage": usage}
             with store._tx() as conn:
+                source_refs = _report_order_refs(data["events"], data["facts"]) if actor.platform == "bb" else set()
+                if source_refs and _admitted_sources_on(conn, tenant).intersection(
+                    source_id for source_id, _ in source_refs
+                ):
+                    conn.execute("""UPDATE memory_jobs SET state='pending',lease_until=0
+                        WHERE tenant_id=? AND job_key=? AND owner=? AND calls=0""", (tenant, key, owner))
+                    return {"status": "pending", "reason": "source_already_admitted", "usage": usage}
                 admitted = conn.execute("UPDATE memory_jobs SET calls=1,input_tokens=? WHERE tenant_id=? AND job_key=? AND owner=? AND state='running' AND calls=0 AND lease_until>?", (input_upper_bound, tenant, key, owner, time.time())).rowcount
                 if admitted and report_order_enabled:
                     eligible_sources = {event["source_id"] for event in data["events"]
@@ -315,9 +382,11 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
                     source_deadlines = [stamp(row["expires_at"]).timestamp() for row in data["_rows"]
                                         if row["source_id"] in eligible_sources]
                     deadline = min([time.time() + 86400, *source_deadlines])
-                    conn.execute("INSERT INTO memory_report_order_attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                 (tenant, key, owner, start, timezone, deadline, len(eligible_sources), "admitted",
-                                  *(report_order_provider or (None, None))))
+                    conn.execute("INSERT INTO memory_report_order_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                 (tenant, owner, owner, start, timezone, deadline, len(eligible_sources), "admitted",
+                                  *(report_order_provider or (None, None)), input_upper_bound))
+                    conn.executemany("INSERT INTO memory_report_order_admitted_sources VALUES(?,?,?,?)",
+                                     [(tenant, owner, source_id, version) for source_id, version in sorted(source_refs)])
             if admitted != 1:
                 return {"status": "pending", "reason": "admission_lost", "usage": usage}
             if time.monotonic() - beginning >= budget.max_seconds:
@@ -404,16 +473,16 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
     payload["coverage"]["reviews_truncated"] = len(payload["reviews"]) < len(observations) + len(reviews)
     with store._tx() as conn:
         lease = conn.execute("SELECT owner FROM memory_jobs WHERE tenant_id=? AND job_key=?", (tenant, key)).fetchone()
-        if report_order_enabled and conn.execute(
-            "SELECT 1 FROM memory_report_order_attempts WHERE tenant_id=? AND job_key=? AND state='uncredited'",
-            (tenant, key),
-        ).fetchone():
-            return _unsettled_report_order_on(conn, tenant, key)
+        if report_order_enabled:
+            attempt = conn.execute("""SELECT * FROM memory_report_order_attempts
+                WHERE tenant_id=? AND owner=? AND state='uncredited'""", (tenant, owner)).fetchone()
+            if attempt is not None:
+                return _unsettled_report_order_on(conn, tenant, attempt)
         fresh = _input_on(store, conn, tenant, period, start, timezone)
         if lease is None or lease["owner"] != owner or fresh["fingerprint"] != data["fingerprint"]:
             if provider_returned and report_order_enabled:
                 conn.execute("""UPDATE memory_report_order_attempts SET state='rejected'
-                    WHERE tenant_id=? AND job_key=? AND owner=?""", (tenant, key, owner))
+                    WHERE tenant_id=? AND owner=?""", (tenant, owner))
             return {"status": "stale", "usage": usage, **attempt_identity}
         fingerprint = data["fingerprint"]
         proof = []
@@ -458,12 +527,8 @@ def consolidate_period(actor: Actor, *, period: str, start: str, timezone: str =
             put_projection(store, conn, tenant, period=period, start=start, timezone=timezone,
                            fingerprint=fingerprint, payload=payload, now=utcnow_iso())
         if report_order_enabled and provider_returned:
-            if status == "completed":
-                conn.execute("DELETE FROM memory_report_order_attempts WHERE tenant_id=? AND job_key=? AND owner=?",
-                             (tenant, key, owner))
-            else:
-                conn.execute("""UPDATE memory_report_order_attempts SET state='rejected'
-                    WHERE tenant_id=? AND job_key=? AND owner=?""", (tenant, key, owner))
+            conn.execute("UPDATE memory_report_order_attempts SET state=? WHERE tenant_id=? AND owner=?",
+                         ("completed" if status == "completed" else "rejected", tenant, owner))
         recorded = previous_usage if previous_usage["calls"] else usage
         conn.execute("UPDATE memory_jobs SET state=?,fingerprint=?,lease_until=0,calls=?,input_tokens=?,output_tokens=? WHERE tenant_id=? AND job_key=? AND owner=?",
                      (status, fingerprint, *recorded.values(), tenant, key, owner))
@@ -508,21 +573,27 @@ def pending_periods(actor: Actor, *, store: PersonalMemoryStore, timezone: str =
         candidates = {"day": dates, "week": {d - timedelta(days=d.weekday()) for d in dates},
                       "month": {d.replace(day=1) for d in dates}, "year": {d.replace(month=1, day=1) for d in dates}}
         pilot_attempts = {}
+        admitted_sources = set()
+        now = time.time()
         if report_order_enabled and actor.platform == "bb":
             for row in conn.execute(
-                "SELECT start,deadline,state FROM memory_report_order_attempts WHERE tenant_id=? AND timezone=?",
+                """SELECT start,deadline,state FROM memory_report_order_attempts
+                    WHERE tenant_id=? AND timezone=?
+                    ORDER BY (state='admitted') DESC,rowid DESC""",
                 (tenant, timezone),
             ):
-                pilot_attempts[row["start"]] = row
-                if row["state"] == "admitted" and row["deadline"] <= time.time():
+                pilot_attempts.setdefault(row["start"], row)
+                if row["state"] == "admitted" and row["deadline"] <= now:
                     dates.add(date.fromisoformat(row["start"]))
+            if pilot_attempts:
+                admitted_sources = _admitted_sources_on(conn, tenant)
         out = []
         unclosed = {}
         for period in ("day", "week", "month", "year"):
             for day in sorted(candidates[period]):
                 start = day.isoformat()
                 attempt = pilot_attempts.get(start) if period == "day" else None
-                if attempt and (attempt["state"] != "admitted" or attempt["deadline"] > time.time()):
+                if attempt and attempt["state"] == "admitted" and attempt["deadline"] > now:
                     continue
                 if cutoff is not None:
                     left, right, _, _ = bounds(period, start, timezone)
@@ -531,7 +602,13 @@ def pending_periods(actor: Actor, *, store: PersonalMemoryStore, timezone: str =
                         continue
                 data = _input_on(store, conn, tenant, period, start, timezone, cache)
                 existing = _projection_on(store, conn, tenant, data)
-                if existing is None or (include_extractive and _can_review_extractive(existing)):
+                if attempt:
+                    pending = attempt["state"] == "admitted" or _has_fresh_report_order_input_on(
+                        store, conn, tenant, data["_rows"], admitted_sources,
+                    )
+                else:
+                    pending = existing is None or (include_extractive and _can_review_extractive(existing))
+                if pending:
                     out.append({"period": period, "start": start})
                     if len(out) == limit:
                         return out

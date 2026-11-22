@@ -78,6 +78,42 @@ REPORT_ORDER_SCHEMA = (
         END""",
 )
 
+REPORT_ORDER_ADMISSION_SCHEMA = (
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_report_order_attempt_owner
+        ON memory_report_order_attempts(tenant_id,owner)""",
+    """CREATE INDEX IF NOT EXISTS idx_report_order_attempt_day
+        ON memory_report_order_attempts(tenant_id,timezone,start)""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_report_order_active_day
+        ON memory_report_order_attempts(tenant_id,timezone,start) WHERE state='admitted'""",
+    """CREATE TABLE IF NOT EXISTS memory_report_order_admitted_sources (
+        tenant_id TEXT NOT NULL, owner TEXT NOT NULL, source_id TEXT NOT NULL, source_version INTEGER NOT NULL,
+        PRIMARY KEY(tenant_id,owner,source_id,source_version),
+        FOREIGN KEY(tenant_id,owner) REFERENCES memory_report_order_attempts(tenant_id,owner) ON DELETE CASCADE)""",
+    """CREATE INDEX IF NOT EXISTS idx_report_order_admitted_source
+        ON memory_report_order_admitted_sources(tenant_id,source_id)""",
+)
+
+
+def migrate_report_order_admissions_on(conn):
+    if not any(row["name"] == "admitted_input_bytes"
+               for row in conn.execute("PRAGMA table_info(memory_report_order_attempts)")):
+        conn.execute("ALTER TABLE memory_report_order_attempts ADD COLUMN admitted_input_bytes INTEGER")
+    for statement in REPORT_ORDER_ADMISSION_SCHEMA:
+        conn.execute(statement)
+    # v7 kept receipts without their exact admitted input. Fence every
+    # possible earlier input from the recorded window, including edited
+    # originals whose prior version was in that window.
+    from .consolidation import bounds
+    for attempt in conn.execute("SELECT tenant_id,owner,start,timezone FROM memory_report_order_attempts"):
+        left, right, _, _ = bounds("day", attempt["start"], attempt["timezone"])
+        conn.execute("""INSERT OR IGNORE INTO memory_report_order_admitted_sources
+            SELECT v.tenant_id,?,v.source_id,v.version FROM memory_source_versions v
+            JOIN memory_journal j ON j.tenant_id=v.tenant_id AND j.source_id=v.source_id
+            WHERE v.tenant_id=? AND ((v.observed_at>=? AND v.observed_at<?)
+                OR (j.occurred_at>=? AND j.occurred_at<?))""",
+            (attempt["owner"], attempt["tenant_id"], left, right, left, right),
+        )
+
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
