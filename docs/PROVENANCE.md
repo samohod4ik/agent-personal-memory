@@ -543,6 +543,7 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
 | `src/agent_personal_memory/journal.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `src/agent_personal_memory/diff_exact.py` | — | — | added | Original suffix automaton implementation preserving Python difflib match semantics; no external code copied |
 | `src/agent_personal_memory/resources.py` | — | — | added | Original process memory availability checks for Windows and Linux |
+| `src/agent_personal_memory/revision_registry.py` | — | — | added | Original external revision ledger and offline recovery; no external code copied |
 | `tests/test_m1_diff_parity.py` | — | — | added | Original exhaustive and seeded synthetic parity checks against Python difflib |
 
 | `src/agent_personal_memory/layered.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
@@ -555,6 +556,7 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
 | `src/agent_personal_memory/auto_core.py` | — | — | added | Original deterministic policy for the BB reply-length pilot |
 | `tests/test_auto_core.py` | — | — | added | Original promotion, cache, evidence and conflict regressions from the BB reply-length pilot |
 | `tests/test_erasure_impact.py` | — | — | added | Original erasure scope and confirmation regressions from the BB pilot |
+| `tests/test_revision_registry.py` | — | — | added | Original external ledger, truncation and recovery regressions |
 | `tests/test_journal_reconciliation.py` | — | — | added | Original replay and capture lineage regressions from the BB pilot |
 | `bench/layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `bench/test_layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |

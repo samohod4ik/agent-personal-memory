@@ -272,6 +272,20 @@ backup can omit later edits and deletions, so it must stay offline until those
 changes are reconciled against independently verified current state. No
 production data is migrated by the library's unit tests.
 
+An enrolled host can pass an independent `registry_dir` to `PersonalMemoryStore`.
+Explicit first enrollment uses `registry_initialize=True`; later opens fail
+closed if the protected ledger, its key or its separate head file are unavailable,
+incomplete or disagree with the database. The ledger stores opaque IDs,
+revisions, admission/completeness flags and keyed digests, never source text.
+Ledger append precedes SQLite commit, so an interrupted cross-file transaction
+fails closed. `restore_snapshot` reconciles an old encrypted image only into
+the absent original store path, suppresses stale revisions and derived data,
+blocks missing originals against reimport, and reports unavailable bytes and
+receipts. It cannot recreate content absent from both image and registry.
+Owner-only permissions protect against other users; they do not isolate code
+running under the same UID. A simultaneous rollback of ledger and head cannot
+be detected without another independent monotonic anchor.
+
 ```sh
 python -m unittest discover -s tests
 python -m unittest discover -s bench

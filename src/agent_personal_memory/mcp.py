@@ -234,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
             "then the package default"
         ),
     )
+    parser.add_argument("--registry-dir", default=None,
+                        help="independent revision registry for an enrolled store")
     return parser
 
 
@@ -510,7 +512,7 @@ class McpToolSurface:
 def build_surface(args: argparse.Namespace) -> McpToolSurface:
     """Provision the fixed identity, store, and outbox for one server run."""
     binding = build_binding(args)
-    store = PersonalMemoryStore(data_dir=args.data_dir or None)
+    store = PersonalMemoryStore(data_dir=args.data_dir or None, registry_dir=getattr(args, 'registry_dir', None))
     return McpToolSurface(
         actor=binding.actor(),
         binding=binding,

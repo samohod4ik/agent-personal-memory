@@ -177,6 +177,17 @@ class StartupConfigTests(unittest.TestCase):
         self.assertEqual(surface.binding.user_id, _USER_ID)
         self.assertEqual(surface.actor.user_id, _USER_ID)
 
+    def test_build_surface_requires_registry_for_enrolled_store(self) -> None:
+        from agent_personal_memory.revision_registry import RegistryError
+        data = Path(self.data_dir) / 'store'
+        registry = Path(self.data_dir) / 'registry'
+        apm.PersonalMemoryStore(data, registry_dir=registry, registry_initialize=True)
+        args = apm_mcp.build_parser().parse_args(_argv(str(data), registry_dir=str(registry)))
+        self.assertEqual(apm_mcp.build_surface(args).store.data_dir, data)
+        args = apm_mcp.build_parser().parse_args(_argv(str(data)))
+        with self.assertRaises(RegistryError):
+            apm_mcp.build_surface(args)
+
     def test_main_reports_missing_extra(self) -> None:
         stderr = io.StringIO()
         with (

@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import uuid
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -412,8 +412,21 @@ class ErasureImpact:
 class PersonalMemoryStore:
     SCHEMA_VERSION = SCHEMA_VERSION
 
-    def __init__(self, data_dir: str | Path | None = None) -> None:
+    def __init__(self, data_dir: str | Path | None = None, *, registry_dir: str | Path | None = None,
+                 registry_initialize: bool = False) -> None:
         self.data_dir = Path(data_dir or default_data_dir())
+        self._registry = None
+        if registry_initialize and registry_dir is None:
+            raise ValueError('registry_initialize requires registry_dir')
+        if registry_dir is not None:
+            from .revision_registry import RegistryError, RevisionRegistry
+            registry_path = Path(registry_dir)
+            if registry_path.resolve().is_relative_to(self.data_dir.resolve()):
+                raise RegistryError('registry must be outside the memory directory')
+            self._registry = RevisionRegistry(registry_path, initialize=registry_initialize)
+            if not registry_initialize and (not (self.data_dir / 'personal_memory.db').is_file()
+                                            or not (self.data_dir / 'master.key').is_file()):
+                raise RegistryError('memory database or key unavailable')
         # Restrictive mode on a directory we create so the db/wal/outbox
         # inside inherit owner-only custody; a pre-existing user dir keeps
         # its mode (no chmod of foreign dirs), and non-POSIX filesystems
@@ -422,25 +435,74 @@ class PersonalMemoryStore:
         self.db_path = self.data_dir / "personal_memory.db"
         self.key_path = self.data_dir / "master.key"
         self._kek = ensure_master_key(self.key_path)
+        if self._registry:
+            self._registry.store_marker = self._registry._mac(['store-key', self._kek.hex()])
+            self._registry.location_marker = self._registry._mac(['store-location', str(self.data_dir.resolve())])
         self._lock = threading.RLock()
-        self._init_db()
+        with self._registry.locked() if self._registry else nullcontext():
+            self._init_db()
+            if not self._registry:
+                conn = self._connect()
+                try:
+                    exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_registry_binding'").fetchone()
+                    if exists and conn.execute('SELECT 1 FROM memory_registry_binding LIMIT 1').fetchone():
+                        from .revision_registry import RegistryError
+                        raise RegistryError('this store requires its independent registry')
+                finally:
+                    conn.close()
+            if self._registry:
+                conn = self._connect()
+                try:
+                    conn.execute('BEGIN IMMEDIATE')
+                    if registry_initialize:
+                        conn.execute('CREATE TABLE IF NOT EXISTS memory_registry_binding (store_marker TEXT NOT NULL)')
+                        if conn.execute('SELECT 1 FROM memory_registry_binding LIMIT 1').fetchone():
+                            raise RegistryError('store is already bound to a registry')
+                        conn.execute('INSERT INTO memory_registry_binding VALUES (?)', (self._registry.store_marker,))
+                        self._registry.append(self._registry.snapshot(conn))
+                    else:
+                        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_registry_binding'").fetchone():
+                            raise RegistryError('store has no registry binding; offline reconciliation required')
+                        binding = conn.execute('SELECT store_marker FROM memory_registry_binding').fetchone()
+                        if binding is None or binding[0] != self._registry.store_marker:
+                            raise RegistryError('store binding does not match registry')
+                        self._registry.check(conn)
+                    conn.execute('COMMIT')
+                except Exception:
+                    conn.execute('ROLLBACK')
+                    raise
+                finally:
+                    conn.close()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        if self._registry:
+            conn.execute("PRAGMA synchronous = FULL")
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA secure_delete = ON")
         return conn
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        with self._lock:
+        with self._lock, (self._registry.locked() if self._registry else nullcontext()):
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                if self._registry:
+                    from .revision_registry import RegistryError
+                    binding = conn.execute("SELECT store_marker FROM memory_registry_binding").fetchall()
+                    if len(binding) != 1 or binding[0][0] != self._registry.store_marker:
+                        raise RegistryError('store registry binding changed')
+                    self._registry.check(conn)
                 yield conn
+                if self._registry:
+                    binding = conn.execute("SELECT store_marker FROM memory_registry_binding").fetchall()
+                    if len(binding) != 1 or binding[0][0] != self._registry.store_marker:
+                        raise RegistryError('store registry binding changed')
+                    self._registry.append(self._registry.snapshot(conn))
                 conn.execute("COMMIT")
             except Exception:
                 try:
@@ -962,6 +1024,8 @@ class PersonalMemoryStore:
                     fields["source_kind"],
                     fields["external_ref"],
                 )
+                if self._registry and self._registry.forgotten_lookup(tenant_id, fields['source_kind'], lookup_hash):
+                    raise NotFoundError('Source was forgotten')
                 existing = self._lookup_source(
                     conn, tenant_id, fields["source_kind"], lookup_hash
                 )
