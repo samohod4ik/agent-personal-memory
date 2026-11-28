@@ -6,7 +6,6 @@ schema. Source text is data; this module never interprets instructions in it.
 from __future__ import annotations
 
 import hashlib
-from difflib import SequenceMatcher
 import json
 import re
 import uuid
@@ -15,6 +14,7 @@ from datetime import datetime, timedelta, timezone as utc
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .crypto import derive_lookup_key, keyed_lookup_hash
+from .diff_exact import ExactSequenceMatcher
 from .insight_extract import insight_content_allowed, turn_has_blocked_secret
 from .layered_store import encode, generation_on, invalidate_generation_on, purge_projections_on
 from .lifecycle import MemoryState
@@ -55,7 +55,7 @@ def stamp(value):
 
 
 def _text(value, label, limit):
-    if not isinstance(value, str) or not value or len(value) > limit or "\x00" in value:
+    if not isinstance(value, str) or not value or (limit is not None and len(value) > limit) or "\x00" in value:
         raise ValidationError(f"{label}: invalid text")
     return value
 
@@ -65,17 +65,23 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
                 session_id: str = "", attachments: tuple[str, ...] = (),
                 parent_source_id: str | None = None, parent_source_version: int | None = None,
                 policy: CapturePolicy, store: PersonalMemoryStore, action_receipt: dict | None = None,
-                reconcile: bool = False, whole_owner_turn: bool = False) -> dict:
+                reconcile: bool = False, whole_owner_turn: bool = False,
+                expected_capture_generation: int | None = None,
+                preserve_original_occurred_at: bool = False) -> dict:
     if type(reconcile) is not bool:
         raise ValidationError("reconcile: boolean required")
     if type(whole_owner_turn) is not bool or (whole_owner_turn and (role != "user" or origin != "direct")):
         raise ValidationError("whole_owner_turn: direct owner capture attestation required")
+    if expected_capture_generation is not None and (type(expected_capture_generation) is not int or expected_capture_generation < 0):
+        raise ValidationError("expected_capture_generation: non-negative integer required")
+    if type(preserve_original_occurred_at) is not bool:
+        raise ValidationError("preserve_original_occurred_at: boolean required")
     if not isinstance(policy, CapturePolicy):
         raise ValidationError("policy: CapturePolicy required")
     if not policy.enabled:
         return {"status": "skipped", "reason": "capture_disabled"}
     _text(event_id, "event_id", 512)
-    _text(text, "text", 65536)
+    _text(text, "text", None)
     semantic_text = text
     if action_receipt is not None:
         from .dreaming import validate_receipt
@@ -90,7 +96,7 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
         semantic_text = encode({k: v for k, v in action_receipt.items() if k != "operation_id"}).decode()
     if _NO_REMEMBER.search(semantic_text) or turn_has_blocked_secret(semantic_text):
         return {"status": "skipped", "reason": "excluded"}
-    validate_snapshot(text.encode("utf-8"))
+    snapshot = validate_snapshot(text.encode("utf-8"), max_bytes=None)
     if role not in {"user", "assistant", "tool"} or origin not in {"direct", "forwarded", "derived", "imported"}:
         raise ValidationError("role/origin: unknown value")
     if parent_source_id is not None or parent_source_version is not None:
@@ -121,10 +127,18 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
     envelope = hashlib.sha256(encode([text, metadata, occurred_at, expires])).hexdigest()
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
+        if expected_capture_generation is not None and generation_on(conn, tenant) != expected_capture_generation:
+            raise ConflictError("capture invalidated by erasure")
         event_hash = keyed_lookup_hash(derive_lookup_key(store._kek), tenant, "journal", event_id)
         row = conn.execute("SELECT * FROM memory_journal WHERE tenant_id=? AND event_hash=?", (tenant, event_hash)).fetchone()
         if row and row["redacted"]:
             return {"status": "forgotten"}
+        if row and preserve_original_occurred_at:
+            occurred_at, expires = row["occurred_at"], row["expires_at"]
+            if expires <= utcnow_iso():
+                return {"status": "skipped", "reason": "expired"}
+            occurred = stamp(occurred_at)
+            envelope = hashlib.sha256(encode([text, metadata, occurred_at, expires])).hexdigest()
         if reconcile and row:
             if row["expires_at"] <= utcnow_iso():
                 return {"status": "skipped", "reason": "expired"}
@@ -196,8 +210,8 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
             if occurred.astimezone(zone(coverage["timezone"])).date().isoformat() == coverage["day"]:
                 conn.execute("DELETE FROM memory_capture_days WHERE tenant_id=? AND day=? AND timezone=?", (tenant, coverage["day"], coverage["timezone"]))
         vid = store._insert_source_version(conn, tenant_id=tenant, source_id=sid, version=version,
-                fields={"snapshot": text.encode("utf-8"), "external_ref": event_id, "metadata": metadata,
-                        "content_hash": content_hash_for(text.encode("utf-8")), "observed_at": occurred_at, "retention_class": "standard"}, now=utcnow_iso())
+                fields={"snapshot": snapshot, "external_ref": event_id, "metadata": metadata,
+                        "content_hash": content_hash_for(snapshot), "observed_at": occurred_at, "retention_class": "standard"}, now=utcnow_iso())
         conn.execute("INSERT INTO memory_capture_generation VALUES(?,?,?) ON CONFLICT(source_id) DO UPDATE SET generation=excluded.generation", (sid, tenant, generation_on(conn, tenant)))
         return {"status": "recorded", "source_id": sid, "version": version, "source_version_id": vid}
 
@@ -442,7 +456,8 @@ def erase_evidence_on(store, conn, tenant, claim_id, now):
                     # Preserve only unchanged correspondence outside the span.
                     # An edit may relocate/rewrite private text elsewhere;
                     # changed regions therefore use a privacy-first fallback.
-                    for tag, a0, a1, b0, b1 in SequenceMatcher(None, old, text, autojunk=False).get_opcodes():
+                    opcodes = ExactSequenceMatcher(None, old, text, autojunk=False).get_opcodes()
+                    for tag, a0, a1, b0, b1 in opcodes:
                         begin, finish = ev["span_start"], ev["span_end"]
                         if tag == "equal":
                             lo, hi = max(a0, begin), min(a1, finish)

@@ -46,6 +46,63 @@ class LayeredMemoryTests(unittest.TestCase):
         reopened = apm.PersonalMemoryStore(self.tmp.name)
         self.assertEqual(len(apm.query_journal(ALICE, store=reopened)["items"]), 2)
 
+    def test_original_time_survives_confirmed_edit(self):
+        first = self.event("Original", "edit-time", occurred_at=NOW)
+        edit = self.event("Revised", "edit-time", occurred_at="2026-10-02T10:00:00Z", preserve_original_occurred_at=True)
+        self.assertEqual(first["source_id"], edit["source_id"])
+        row = apm.query_journal(ALICE, store=self.store, include_text=True)["items"][0]
+        self.assertEqual(row["occurred_at"], NOW)
+        self.assertEqual(row["text"], "Revised")
+
+    def test_large_journal_original_preserves_exact_unicode_and_versions(self):
+        text = "I prefer tea. " + "ж🙂a" * 160000 + "TAIL"
+        original = self.event(text, "large")
+        replay = self.event(text, "large")
+        self.assertEqual(replay["source_version_id"], original["source_version_id"])
+        row = apm.query_journal(ALICE, store=self.store, include_text=True)["items"][0]
+        self.assertEqual(row["text"], text)
+        edited = self.event(text + " EDIT", "large")
+        self.assertEqual(edited["source_id"], original["source_id"])
+        self.assertEqual(edited["version"], original["version"] + 1)
+        self.assertEqual(apm.query_journal(ALICE, store=self.store, include_text=True)["items"][0]["text"], text + " EDIT")
+        claim = apm.remember_from_evidence(ALICE, source_id=edited["source_id"], source_version=edited["version"], start=0, end=13, store=self.store)
+        self.store.erase_claim(ALICE, claim["claim_id"])
+        self.assertEqual(self.event(text + " EDIT", "large")["status"], "forgotten")
+        self.assertNotIn("I prefer tea.", apm.query_journal(ALICE, store=self.store, include_text=True)["items"][0]["text"])
+
+    def test_pending_capture_cannot_commit_after_forget(self):
+        from agent_personal_memory.layered_store import generation_on
+        _, claim = self.fact()
+        with self.store._tx() as conn:
+            tenant = self.store._ensure_principal_on(conn, ALICE)
+            generation = generation_on(conn, tenant)
+        self.store.erase_claim(ALICE, claim["claim_id"])
+        with self.assertRaises(apm.ConflictError):
+            self.event("Pending upload", "pending", expected_capture_generation=generation)
+        self.assertFalse(any(row["text"] == "Pending upload" for row in apm.query_journal(ALICE, store=self.store, include_text=True)["items"]))
+
+    def test_large_repetitive_middle_edit_keeps_forget_available(self):
+        text = "I prefer tea. " + "ж🙂a" * 160000 + "TAIL"
+        original = self.event(text, "large-middle")
+        claim = apm.remember_from_evidence(ALICE, source_id=original["source_id"], source_version=1, start=0, end=13, store=self.store)
+        middle = len(text) // 2
+        self.event(text[:middle] + "edited" + text[middle:], "large-middle")
+        self.store.erase_claim(ALICE, claim["claim_id"])
+        self.assertEqual(self.event(text, "large-middle")["status"], "forgotten")
+
+    def test_deletion_memory_refusal_rolls_back_all_changes(self):
+        from agent_personal_memory.diff_exact import ExactSequenceMatcher
+        original = self.event("I prefer tea. abab", "refusal")
+        claim = apm.remember_from_evidence(ALICE, source_id=original["source_id"], source_version=1, start=0, end=13, store=self.store)
+        self.event("I prefer tea. baba", "refusal")
+        state_before = apm.get_authorized_claim(ALICE, claim["claim_id"], store=self.store)["state"]
+        with patch("agent_personal_memory.journal.ExactSequenceMatcher", side_effect=lambda *a, **kw: ExactSequenceMatcher(*a, **kw, threshold=0)):
+            with patch("agent_personal_memory.diff_exact.available_memory", return_value=1):
+                with self.assertRaises(MemoryError):
+                    self.store.erase_claim(ALICE, claim["claim_id"])
+        self.assertEqual(apm.query_journal(ALICE, store=self.store, include_text=True)["items"][0]["text"], "I prefer tea. baba")
+        self.assertEqual(apm.get_authorized_claim(ALICE, claim["claim_id"], store=self.store)["state"], state_before)
+
     def test_capture_exclusions_retention_and_foreign_actor(self):
         self.assertEqual(self.event(policy=apm.CapturePolicy())["status"], "skipped")
         self.assertEqual(self.event("Не запоминай это сообщение.")["status"], "skipped")

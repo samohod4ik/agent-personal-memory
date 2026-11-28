@@ -67,6 +67,12 @@ it is conservative syntax validation, not a proof that the owner is truthful.
 Use `record_turn(..., reconcile=True)` when replaying a host timeline. Missing
 events are inserted. Matching events keep their original timestamps, versions
 and lineage. Conflicting entries are skipped with `reconcile_existing_event`.
+For a verified source edit, `preserve_original_occurred_at=True` retains the
+original retention deadline; `expected_capture_generation` rejects a capture
+that raced with erasure. Both are trusted host-only controls. Journal originals
+may exceed the limit used by other source snapshots; storage and available
+memory remain finite. Exact-span deletion preserves the same matching and tie
+rules on large edits, and fails atomically if available memory is insufficient.
 The ordinary ingest path still accepts trusted source revisions. Changes to
 an existing capture timestamp are preserved as observed in reconciliation.
 

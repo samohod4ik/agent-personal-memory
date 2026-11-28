@@ -197,12 +197,12 @@ def validate_external_ref(value: object) -> str:
     return value
 
 
-def validate_snapshot(value: object) -> bytes:
+def validate_snapshot(value: object, *, max_bytes: int | None = _SNAPSHOT_MAX) -> bytes:
     if not isinstance(value, (bytes, bytearray)):
         _fail("snapshot", "must be bytes")
     data = bytes(value)
-    if not 1 <= len(data) <= _SNAPSHOT_MAX:
-        _fail("snapshot", "length must be 1-65536")
+    if not data or (max_bytes is not None and len(data) > max_bytes):
+        _fail("snapshot", "length must be 1-65536" if max_bytes == _SNAPSHOT_MAX else "invalid length")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:

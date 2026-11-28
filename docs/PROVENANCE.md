@@ -541,6 +541,10 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
   modules; the only env var read is `PERSONAL_MEMORY_DATA_DIR`.
 
 | `src/agent_personal_memory/journal.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+| `src/agent_personal_memory/diff_exact.py` | — | — | added | Original suffix automaton implementation preserving Python difflib match semantics; no external code copied |
+| `src/agent_personal_memory/resources.py` | — | — | added | Original process memory availability checks for Windows and Linux |
+| `tests/test_m1_diff_parity.py` | — | — | added | Original exhaustive and seeded synthetic parity checks against Python difflib |
+
 | `src/agent_personal_memory/layered.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `src/agent_personal_memory/layered_store.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `src/agent_personal_memory/consolidation.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
@@ -556,6 +560,13 @@ Post-merge-queue review round (`lanes/pm-oss-core`, reviewer sonnet5):
 | `bench/test_layered_bench.py` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `docs/layered-memory.md` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
 | `docs/layered-memory-plan.md` | — | — | added | Original layered-memory implementation, tests or documentation for #6 |
+
+The exact matcher subclasses the Python standard library's `difflib`
+`SequenceMatcher`; it does not vendor that module. Reference: CPython
+contributors, [Python 3.12.3 `Lib/difflib.py`](https://github.com/python/cpython/blob/f6650f9ad73359051f3e558c2431a109bc016664/Lib/difflib.py)
+at `f6650f9ad73359051f3e558c2431a109bc016664`, under the
+[PSF License Agreement](https://github.com/python/cpython/blob/f6650f9ad73359051f3e558c2431a109bc016664/LICENSE).
+The suffix automaton implementation here is original; no external code was copied.
 
 ## Retained compatibility strings
 
