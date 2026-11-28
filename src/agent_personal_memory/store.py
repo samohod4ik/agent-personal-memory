@@ -60,7 +60,7 @@ from .validation import (
 
 logger = logging.getLogger("plugins.personal-memory")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _CREATE_SCHEMA_SQL = (
     """
@@ -480,6 +480,10 @@ class PersonalMemoryStore:
                     from .layered_store import SCHEMA
                     for statement in SCHEMA:
                         conn.execute(statement)
+                if current < 7:
+                    conn.execute("""CREATE TABLE IF NOT EXISTS memory_quarantined_sources (
+                        tenant_id TEXT NOT NULL, source_id TEXT NOT NULL,
+                        PRIMARY KEY(tenant_id,source_id), FOREIGN KEY(source_id) REFERENCES memory_sources(id))""")
                 if current < self.SCHEMA_VERSION:
                     conn.execute(
                         "INSERT OR REPLACE INTO memory_schema(id, version) VALUES (1, ?)",
@@ -1051,7 +1055,8 @@ class PersonalMemoryStore:
             tenant_id = self._ensure_principal_on(conn, actor)
             row = conn.execute(
                 "SELECT id, source_kind, created_at, deleted_at FROM memory_sources "
-                "WHERE id = ? AND tenant_id = ?",
+                "WHERE id = ? AND tenant_id = ? AND NOT EXISTS "
+                "(SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=memory_sources.tenant_id AND q.source_id=memory_sources.id)",
                 (source_id, tenant_id),
             ).fetchone()
             version_row = None
@@ -1108,6 +1113,7 @@ class PersonalMemoryStore:
                 "JOIN memory_source_versions v "
                 "ON v.source_id = s.id AND v.tenant_id = s.tenant_id "
                 "WHERE s.tenant_id = ? AND s.deleted_at IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=s.tenant_id AND q.source_id=s.id) "
                 "AND v.deletion_state = 'active' AND v.version = ("
                 "SELECT MAX(v2.version) FROM memory_source_versions v2 "
                 "WHERE v2.source_id = s.id AND v2.deletion_state = 'active'"
@@ -1139,7 +1145,8 @@ class PersonalMemoryStore:
     ) -> sqlite3.Row | None:
         return conn.execute(
             "SELECT id, source_kind, tenant_id, created_at FROM memory_sources "
-            "WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL",
+            "WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL AND NOT EXISTS "
+            "(SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=memory_sources.tenant_id AND q.source_id=memory_sources.id)",
             (source_id, tenant_id),
         ).fetchone()
 
@@ -2642,6 +2649,7 @@ class PersonalMemoryStore:
                 "JOIN memory_source_versions v "
                 "ON v.source_id = s.id AND v.tenant_id = s.tenant_id "
                 "WHERE s.tenant_id = ? AND s.deleted_at IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=s.tenant_id AND q.source_id=s.id) "
                 "AND v.version = ("
                 "SELECT MAX(v2.version) FROM memory_source_versions v2 "
                 "WHERE v2.source_id = s.id"
@@ -3043,7 +3051,8 @@ class PersonalMemoryStore:
         )
 
     def _erase_source_on(
-        self, conn: sqlite3.Connection, *, tenant_id: str, source_id: str, _cascade_derived: bool = True
+        self, conn: sqlite3.Connection, *, tenant_id: str, source_id: str, _cascade_derived: bool = True,
+        _redact_dependents: bool = True, _expiry_cutoff: str | None = None
     ) -> ErasureReceipt:
         from .layered_store import purge_projections_on
         from .journal import erase_derived_sources_on
@@ -3063,7 +3072,10 @@ class PersonalMemoryStore:
         ]
         for claim_id in dependents:
             if self._erasable_claim(conn, tenant_id, claim_id) is not None:
-                self._erase_claim_on(conn, tenant_id=tenant_id, claim_id=claim_id)
+                from .journal import has_exact_alternative_on
+                if has_exact_alternative_on(self, conn, tenant_id, claim_id, source_id, _expiry_cutoff or utcnow_iso()):
+                    continue
+                self._erase_claim_on(conn, tenant_id=tenant_id, claim_id=claim_id, _redact_sources=_redact_dependents)
         now = utcnow_iso()
         self._destroy_source_blobs(conn, tenant_id=tenant_id, source_id=source_id)
         conn.execute(

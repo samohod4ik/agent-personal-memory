@@ -55,6 +55,31 @@ class DreamingTests(unittest.TestCase):
                 "usage": {"input_tokens": 1, "output_tokens": 1}}
         return adapter
 
+    def test_invalid_review_does_not_discard_valid_source_proposals(self):
+        events = [self.turn(f"Synthetic owner statement number {i}.", f"proposal-{i}") for i in range(16)]
+        def judge(request):
+            proposals = []
+            for event in request["events"]:
+                if event["source_id"] in {e["source_id"] for e in events}:
+                    proposals.append({"source_id": event["source_id"], "source_version": event["version"],
+                                      "start": 0, "end": len(event["text"])})
+            return {"selected_claim_ids": [], "proposals": proposals,
+                    "reviews": [{"kind": "lesson", "verdict": "supported", "summary": "bad"}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1}}
+        result = self.run_period(judge, budget=apm.ConsolidationBudget(max_input_tokens=65536, max_output_tokens=65536))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["projection"]["candidates"]), 16)
+        self.assertEqual(result["projection"]["coverage"]["reviews_dropped"], 1)
+
+    def test_without_receipts_contract_does_not_request_reviews(self):
+        requests = []
+        def judge(request):
+            requests.append(request)
+            return {"selected_claim_ids": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
+        self.assertEqual(self.run_period(judge)["status"], "completed")
+        self.assertNotIn("reviews", requests[0]["contract"].lower())
+        self.assertFalse(requests[0]["allow_reviews"])
+
     def test_false_done_does_not_override_failed_tool(self):
         failure = self.receipt()
         reply = self.turn("Done, production is updated.", "done", role="assistant", origin="derived",
@@ -81,7 +106,10 @@ class DreamingTests(unittest.TestCase):
         self.turn("Check the actual installed version.", "followup")
         review = dict(kind="assessment", environment=ENV, verdict="supported",
             summary="Deployment completed.", evidence=[self.ref(result)])
-        self.assertEqual(self.run_period(self.provider(review))["status"], "pending")
+        rejected = self.run_period(self.provider(review))
+        self.assertEqual(rejected["status"], "completed")
+        self.assertEqual(rejected["projection"]["coverage"]["reviews_dropped"], 1)
+        self.assertFalse(any(r.get("state") == "candidate" for r in rejected["projection"]["reviews"]))
 
     def test_conflicting_observations_stay_explicit(self):
         self.receipt("observed-yes", "observed", "succeeded")
@@ -106,7 +134,10 @@ class DreamingTests(unittest.TestCase):
         failure = self.receipt()
         review = dict(kind="assessment", environment=ENV, verdict="contradicted",
             summary="password is very-private", evidence=[self.ref(failure)])
-        self.assertEqual(self.run_period(self.provider(review))["status"], "pending")
+        rejected = self.run_period(self.provider(review))
+        self.assertEqual(rejected["status"], "completed")
+        self.assertEqual(rejected["projection"]["coverage"]["reviews_dropped"], 1)
+        self.assertFalse(any(r.get("state") == "candidate" for r in rejected["projection"]["reviews"]))
 
     def test_numeric_source_uuid_is_not_misclassified_as_a_secret(self):
         from agent_personal_memory.dreaming import validate_reviews
@@ -178,7 +209,7 @@ class DreamingTests(unittest.TestCase):
         self.assertNotIn(huge["source_id"], opened)
         self.assertEqual(result["projection"]["coverage"]["review_scope"], "host_receipts_only")
 
-    def test_provider_input_is_admitted_before_decryption_and_partial_is_explicit(self):
+    def test_unpassable_original_is_rejected_before_decryption_or_provider(self):
         huge = self.turn("A" * 60000, "large-original")
         self.receipt()
         opened, requests = [], []
@@ -191,21 +222,25 @@ class DreamingTests(unittest.TestCase):
             return {"selected_claim_ids": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
         with patch.object(self.store, "_decrypt_version", side_effect=tracked):
             result = self.run_period(provider)
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "budget_exhausted")
+        self.assertEqual(result["reason"], "event_too_large")
         self.assertNotIn(huge["source_id"], opened)
-        self.assertEqual(requests[0]["coverage"]["review_events_omitted"], 1)
-        self.assertTrue(result["projection"]["coverage"]["review_input_truncated"])
-        self.assertEqual(result["projection"]["reviews"][0]["verdict"], "insufficient_evidence")
-        self.assertEqual(result["projection"]["reviews"][0]["coverage"], "partial_batch")
+        self.assertEqual(requests, [])
 
     def test_lesson_requires_observed_success_and_matching_scope(self):
         failure = self.receipt()
         success = self.receipt("result-ok", "result", "succeeded")
-        self.assertEqual(self.run_period(self.provider(self.lesson(failure, success)))["status"], "pending")
+        rejected = self.run_period(self.provider(self.lesson(failure, success)))
+        self.assertEqual(rejected["status"], "completed")
+        self.assertEqual(rejected["projection"]["coverage"]["reviews_dropped"], 1)
+        self.assertFalse(any(r.get("state") == "candidate" for r in rejected["projection"]["reviews"]))
         self.receipt("new", "observed", "succeeded", environment={**ENV, "host": "other"})
         foreign = apm.query_journal(ACTOR, store=self.store, include_text=True)["items"]
         foreign = next(e for e in foreign if e.get("action_receipt") and e["action_receipt"]["environment"]["host"] == "other")
-        self.assertEqual(self.run_period(self.provider(self.lesson(failure, foreign)))["status"], "pending")
+        rejected = self.run_period(self.provider(self.lesson(failure, foreign)))
+        self.assertEqual(rejected["status"], "completed")
+        self.assertEqual(rejected["projection"]["coverage"]["reviews_dropped"], 1)
+        self.assertFalse(any(r.get("state") == "candidate" for r in rejected["projection"]["reviews"]))
 
     def test_forget_during_review_cannot_publish_or_replay(self):
         failure = self.receipt()
@@ -234,7 +269,10 @@ class DreamingTests(unittest.TestCase):
             tool["action_receipt"]["phase"] = "observed"
             return self.provider(dict(kind="assessment", environment=ENV, verdict="supported",
                 summary="Done.", evidence=[self.ref(result)]))(request)
-        self.assertEqual(self.run_period(adapter)["status"], "pending")
+        rejected = self.run_period(adapter)
+        self.assertEqual(rejected["status"], "completed")
+        self.assertEqual(rejected["projection"]["coverage"]["reviews_dropped"], 1)
+        self.assertFalse(any(r.get("state") == "candidate" for r in rejected["projection"]["reviews"]))
 
     def test_parent_edit_invalidates_existing_reviews(self):
         self.receipt()

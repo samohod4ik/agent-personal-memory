@@ -153,7 +153,9 @@ class LayeredMemoryTests(unittest.TestCase):
         second_bound = dict(role="assistant", origin="derived", parent_source_id=second["source_id"], parent_source_version=1)
         self.event("A previous answer.", "second-response", **second_bound)
         self.event("An edited question.", "question")
-        self.assertIsNone(apm.get_journal_event(ALICE, event_id="second-response", store=self.store))
+        self.assertIsNotNone(apm.get_journal_event(ALICE, event_id="second-response", store=self.store))
+        history = apm.query_journal(ALICE, store=self.store, include_text=True, include_history=True)['items']
+        self.assertTrue(next(e for e in history if e['text'] == 'A previous answer.')['history_only'])
         self.assertEqual(apm.get_journal_event(ALICE, event_id="question", store=self.store)["version"], 2)
         legacy, legacy_claim = self.fact("I prefer coffee.", "legacy")
         with self.store._tx() as conn:
@@ -541,7 +543,7 @@ class LayeredMemoryTests(unittest.TestCase):
         reopened = apm.PersonalMemoryStore(self.tmp.name)
         self.assertEqual(reopened.get_source(ALICE, event["source_id"])["snapshot"], b"A very unique private memory phrase.")
         with closing(reopened._connect()) as conn:
-            self.assertEqual(conn.execute("SELECT version FROM memory_schema").fetchone()[0], 6)
+            self.assertEqual(conn.execute("SELECT version FROM memory_schema").fetchone()[0], 7)
 
 
 if __name__ == "__main__":

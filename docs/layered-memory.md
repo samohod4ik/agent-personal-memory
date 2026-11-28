@@ -52,7 +52,7 @@ it is conservative syntax validation, not a proof that the owner is truthful.
 | --- | --- |
 | `record_turn` | Keyword-only `event_id`, `text`, UTC-aware `occurred_at`, `policy`, `store`; optional `timezone='UTC'`, `role='user'`, `origin='direct'`, `session_id=''`, `attachments=()`. Roles: user/assistant/tool. Origins: direct/forwarded/derived/imported. Derived events may bind `parent_source_id` + `parent_source_version`: current same-actor nonredacted journal source, immutable per event. Returns status recorded/replayed/skipped/forgotten; accepted events include source ID/version. Same ID+envelope replays; metadata or text edits append a version and retract prior derived facts. |
 | `get_journal_event` | `event_id`, `store`. Resolves authenticated host event identity to source ID/current version/version ID/date/captured generation without plaintext, capture or learning; returns `None` for absent, deleted, redacted or expired originals. |
-| `query_journal` | `store`, `limit=50` (1–500), opaque `cursor=None`, optional exact substring `query`, `include_text=False`. Returns items + next_cursor. Pagination/search covers all retained events, not just the newest 500. |
+| `query_journal` | `store`, `limit=50` (1–500), opaque `cursor=None`, optional exact substring `query`, `include_text=False`, `include_history=False`. Explicit history includes retained generated events with unknown dependencies marked `history_only`; these are not current evidence. Returns items + next_cursor. |
 | `remember_from_evidence` | `source_id`, `source_version`, Unicode character `start:end`, `claim_kind='confirmed_fact'`, `store`. Requires current accessible version; refuses overlapping retained fact spans. Returns existing claim result on exact replay. |
 | `correct_from_evidence` | Existing claim ID and a new current source version/whole statement span; corrects and binds the new evidence atomically, preserving old lineage for forget. An explicit correction prefix may be omitted. |
 | `learn_from_turn` | Existing API; optional `source_id` + `source_version` route exact original turns through journal evidence. Without them it retains legacy insight-source behavior and does not silently enable raw capture. |
@@ -84,10 +84,11 @@ opening is separate consent/host policy, not automatic inclusion of full chats.
 
 Generated assistant responses are derived data, not owner facts or delivery
 receipts. A reply can reuse an older memory unrelated to its immediate prompt.
-Therefore source edit, forget and retention pruning conservatively erase **all
-assistant-origin journal records for the same actor**, plus declared derived
-children. This intentionally loses unrelated generated responses rather than
-retain a paraphrase of forgotten data. Unrelated direct user originals remain;
+After an edit or TTL expiry, generated history with potentially affected or
+unknown dependencies is retained only until its own TTL and marked history-only.
+It is excluded from current retrieval, summaries, exports and evidence. Explicit
+forget conservatively erases potentially affected generated records for the
+same actor plus declared derived children. Unrelated direct user originals remain;
 semantic copies independently re-entered by users and external backups are not
 claimed to be detected or erased. Parent bindings prevent stale/foreign replay
 and support capture exclusions; they do not prove complete semantic ancestry.
@@ -135,8 +136,9 @@ are persisted atomically as candidates, never automatically promoted. Existing
 candidate review supplies the confirmation boundary. Unknown IDs, missing usage,
 oversized or late results are rejected. Admission uses request UTF-8 bytes as a
 conservative token upper estimate; accounting never trusts a smaller reported
-input number. An oversized period is refused before the call; the host must choose smaller
-periods/input policy rather than assume every period fits. The host must enforce provider timeout/cancellation and output
+input number. Original events are processed in bounded batches with encrypted
+checkpoints across runs. A single event that cannot fit is rejected before the
+call; no partial period is published. The host must enforce provider timeout/cancellation and output
 limits; the library itself cannot stop an arbitrary hanging Python callable.
 
 Calls run outside the SQLite transaction. A persisted lease blocks a concurrent
@@ -263,11 +265,12 @@ The evidence-review design is informed by Lance Martin / Anthropic,
 and the earlier [Sleep-time Compute](https://arxiv.org/abs/2504.13171) research.
 The layered-memory architecture retains the Iva / Serge Shima attribution above.
 
-Opening a v1–v5 store upgrades it transactionally to v6. Existing sources, keys
+Opening a v1–v6 store upgrades it transactionally to v7. Existing sources, keys
 and claims remain. Before upgrading a real store, take a consistent SQLite
-backup and retain its existing key. Reverting to old code requires restoring
-that matching old database, not reopening v6 with v0.2. No production data is
-migrated by the library's unit tests.
+backup and retain its existing key. Older code cannot safely reopen v7. An old
+backup can omit later edits and deletions, so it must stay offline until those
+changes are reconciled against independently verified current state. No
+production data is migrated by the library's unit tests.
 
 ```sh
 python -m unittest discover -s tests

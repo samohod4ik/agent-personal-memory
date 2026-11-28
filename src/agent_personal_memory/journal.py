@@ -180,13 +180,16 @@ def record_turn(actor: Actor, *, event_id: str, text: str, occurred_at: str,
             if row["envelope_hash"] == envelope:
                 return {"status": "replayed", "source_id": sid, "version": old["version"], "source_version_id": old["id"]}
             version = old["version"] + 1
-            erase_derived_sources_on(store, conn, tenant, sid)
+            quarantine_generated_on(store, conn, tenant, sid)
             # Original event edits revoke dependent facts immediately. Keep their
             # version history but remove them from current retrieval and FTS.
             from .fts_index import delete_claim_fts_rows
             for ev in conn.execute("SELECT DISTINCT e.claim_id FROM memory_evidence e WHERE e.tenant_id=? AND e.source_id=? AND e.claim_version=(SELECT MAX(v.version) FROM memory_claim_versions v WHERE v.claim_id=e.claim_id AND v.tenant_id=e.tenant_id)", (tenant, sid)).fetchall():
                 latest = store._newest_claim_version(conn, tenant, ev["claim_id"])
                 if latest and latest["state"] in {"candidate", "confirmed"}:
+                    if has_exact_alternative_on(store, conn, tenant, ev['claim_id'], sid, utcnow_iso()):
+                        conn.execute('DELETE FROM memory_support WHERE tenant_id=? AND claim_id=? AND source_id=?', (tenant, ev['claim_id'], sid))
+                        continue
                     content, explanation = store._decrypt_claim_fields(conn, tenant_id=tenant, claim_id=ev["claim_id"], version_row=latest)
                     conn.execute("UPDATE memory_claim_versions SET state='superseded' WHERE id=?", (latest["id"],))
                     store._insert_claim_version(conn, tenant_id=tenant, claim_id=ev["claim_id"], version=latest["version"] + 1,
@@ -260,13 +263,41 @@ def erase_derived_sources_on(store, conn, tenant, source_id):
         store._erase_source_on(conn, tenant_id=tenant, source_id=child, _cascade_derived=False)
 
 
-def journal_rows_on(store, conn, tenant):
-    return conn.execute("""SELECT j.*,s.source_kind,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc
+def quarantine_generated_on(store, conn, tenant, source_id):
+    """Retain potentially stale generated history without serving or learning it."""
+    from .fts_index import delete_claim_fts_rows
+    invalidate_generation_on(conn, tenant)
+    rows = conn.execute("SELECT id FROM memory_sources WHERE tenant_id=? AND source_kind IN ('assistant_message','tool_result') AND deleted_at IS NULL AND id<>?", (tenant, source_id)).fetchall()
+    for row in rows:
+        sid = row['id']
+        conn.execute("INSERT OR IGNORE INTO memory_quarantined_sources VALUES(?,?)", (tenant, sid))
+        claims = conn.execute("SELECT DISTINCT claim_id FROM memory_support WHERE tenant_id=? AND source_id=?", (tenant, sid)).fetchall()
+        for claim in claims:
+            claim_id = claim['claim_id']
+            latest = store._newest_claim_version(conn, tenant, claim_id)
+            if latest and latest['state'] in {'candidate', 'confirmed'}:
+                if has_exact_alternative_on(store, conn, tenant, claim_id, sid, utcnow_iso()):
+                    conn.execute('DELETE FROM memory_support WHERE tenant_id=? AND claim_id=? AND source_id=?', (tenant, claim_id, sid))
+                    continue
+                content, explanation = store._decrypt_claim_fields(conn, tenant_id=tenant, claim_id=claim_id, version_row=latest)
+                conn.execute("UPDATE memory_claim_versions SET state='superseded' WHERE id=?", (latest['id'],))
+                store._insert_claim_version(conn, tenant_id=tenant, claim_id=claim_id, version=latest['version']+1,
+                    state=MemoryState.RETRACTED, sensitivity=latest['sensitivity'], content=content,
+                    confidence=latest['confidence'], explanation=explanation, valid_from=latest['valid_from'],
+                    valid_to=latest['valid_to'], expires_at=None, supersedes_id=latest['id'], now=utcnow_iso(), change_reason='retracted')
+                delete_claim_fts_rows(conn, tenant_id=tenant, claim_id=claim_id)
+        conn.execute("DELETE FROM memory_relations WHERE tenant_id=? AND source_id=?", (tenant, sid))
+
+
+def journal_rows_on(store, conn, tenant, *, include_history=False):
+    return conn.execute("""SELECT j.*,s.source_kind,v.id AS source_version_id,v.version,v.snapshot_enc,v.locator_enc,v.metadata_enc,
+        EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=j.tenant_id AND q.source_id=j.source_id) AS history_only
         FROM memory_journal j JOIN memory_sources s ON s.id=j.source_id AND s.tenant_id=j.tenant_id
         JOIN memory_source_versions v ON v.source_id=j.source_id AND v.tenant_id=j.tenant_id
         WHERE j.tenant_id=? AND s.deleted_at IS NULL AND j.expires_at>?
+        AND (? OR NOT EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=j.tenant_id AND q.source_id=j.source_id))
         AND v.deletion_state='active' AND v.version=(SELECT MAX(x.version) FROM memory_source_versions x WHERE x.source_id=j.source_id)
-        ORDER BY j.occurred_at,j.source_id""", (tenant, utcnow_iso())).fetchall()
+        ORDER BY j.occurred_at,j.source_id""", (tenant, utcnow_iso(), include_history)).fetchall()
 
 
 def event_on(store, conn, tenant, row):
@@ -282,21 +313,26 @@ def event_on(store, conn, tenant, row):
 
 
 def query_journal(actor: Actor, *, store: PersonalMemoryStore, limit: int = 50,
-                  cursor: str | None = None, query: str | None = None, include_text: bool = False) -> dict:
+                  cursor: str | None = None, query: str | None = None, include_text: bool = False,
+                  include_history: bool = False) -> dict:
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValidationError("limit: 1..500 required")
     if query is not None and not isinstance(query, str):
         raise ValidationError("query: string required")
     if cursor is not None and (not isinstance(cursor, str) or len(cursor) > 200):
         raise ValidationError("cursor: invalid")
+    if type(include_history) is not bool:
+        raise ValidationError("include_history: boolean required")
     items, last, more = [], None, False
     with store._tx() as conn:
         tenant = store._ensure_principal_on(conn, actor)
-        for row in journal_rows_on(store, conn, tenant):
+        for row in journal_rows_on(store, conn, tenant, include_history=include_history):
             key = row["occurred_at"] + "|" + row["source_id"]
             if cursor is not None and key <= cursor:
                 continue
             item = event_on(store, conn, tenant, row)
+            if row['history_only']:
+                item['history_only'] = True
             if query and query.casefold() not in item["text"].casefold():
                 continue
             if len(items) == limit:
@@ -314,6 +350,7 @@ def _evidence_source_on(store, conn, tenant, source_id, source_version, start, e
         FROM memory_journal j JOIN memory_source_versions v ON v.source_id=j.source_id AND v.tenant_id=j.tenant_id
         JOIN memory_sources s ON s.id=j.source_id WHERE j.tenant_id=? AND j.source_id=? AND v.version=?
         AND j.expires_at>? AND (j.redacted=0 OR NOT ?) AND v.deletion_state='active' AND s.deleted_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=j.tenant_id AND q.source_id=j.source_id)
         AND v.version=(SELECT MAX(x.version) FROM memory_source_versions x WHERE x.source_id=j.source_id)""",
         (tenant, source_id, source_version, utcnow_iso(), require_unredacted)).fetchone()
     if row is None:
@@ -340,6 +377,27 @@ def validate_statement_on(store, conn, tenant, source_id, source_version, start,
     if not insight_content_allowed(quote):
         raise ValidationError("evidence: excluded content")
     return event, quote
+
+
+def has_exact_alternative_on(store, conn, tenant, claim_id, excluded_source, cutoff):
+    """A live independent whole owner statement must equal the claim verbatim."""
+    latest = store._newest_claim_version(conn, tenant, claim_id)
+    if not latest or latest['state'] not in {'candidate', 'confirmed'}:
+        return False
+    content, _ = store._decrypt_claim_fields(conn, tenant_id=tenant, claim_id=claim_id, version_row=latest)
+    rows = conn.execute("""SELECT e.* FROM memory_evidence e JOIN memory_journal j
+        ON j.tenant_id=e.tenant_id AND j.source_id=e.source_id
+        JOIN memory_support s ON s.tenant_id=e.tenant_id AND s.claim_id=e.claim_id AND s.source_id=e.source_id
+        WHERE e.tenant_id=? AND e.claim_id=? AND e.claim_version=? AND e.source_id<>? AND j.expires_at>?""",
+        (tenant, claim_id, latest['version'], excluded_source, cutoff)).fetchall()
+    for row in rows:
+        try:
+            _, quote = validate_statement_on(store, conn, tenant, row['source_id'], row['source_version'], row['span_start'], row['span_end'])
+            if quote.encode('utf-8') == content:
+                return True
+        except (NotFoundError, ValidationError):
+            continue
+    return False
 
 
 def remember_from_evidence(actor: Actor, *, source_id: str, source_version: int, start: int, end: int,
@@ -500,7 +558,8 @@ def prune_journal(actor: Actor, *, store: PersonalMemoryStore, now: str | None =
         tenant = store._ensure_principal_on(conn, actor)
         ids = [r[0] for r in conn.execute("SELECT j.source_id FROM memory_journal j JOIN memory_sources s ON s.id=j.source_id WHERE j.tenant_id=? AND j.expires_at<=? AND s.deleted_at IS NULL", (tenant, cutoff))]
         for sid in ids:
-            store._erase_source_on(conn, tenant_id=tenant, source_id=sid)
+            quarantine_generated_on(store, conn, tenant, sid)
+            store._erase_source_on(conn, tenant_id=tenant, source_id=sid, _cascade_derived=False, _redact_dependents=False, _expiry_cutoff=cutoff)
     if ids:
         store._compact_after_erasure()
     return {"expired": len(ids)}

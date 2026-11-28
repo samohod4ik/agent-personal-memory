@@ -249,6 +249,7 @@ def query_sources(
                     "JOIN memory_source_versions v "
                     "ON v.source_id = s.id AND v.tenant_id = s.tenant_id "
                     "WHERE s.tenant_id = ? AND s.deleted_at IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM memory_quarantined_sources q WHERE q.tenant_id=s.tenant_id AND q.source_id=s.id) "
                     "AND v.deletion_state = 'active' AND v.version = ("
                     "SELECT MAX(v2.version) FROM memory_source_versions v2 "
                     "WHERE v2.source_id = s.id AND v2.deletion_state = 'active'"

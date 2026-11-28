@@ -59,8 +59,8 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
 
     def test_fresh_schema_creates_required_tables_without_fts(self) -> None:
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 6)
-        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 6)
+        self.assertEqual(store.SCHEMA_VERSION, 7)
+        self.assertEqual(PersonalMemoryStore.SCHEMA_VERSION, 7)
         conn = store._connect()
         try:
             names = {
@@ -76,7 +76,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
                 msg="plaintext FTS/search shadows are forbidden",
             )
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 6)
+            self.assertEqual(int(version), 7)
             index_sql = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
                 "AND name = 'idx_memory_sources_lookup'"
@@ -116,7 +116,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) FROM memory_principals").fetchone()[0]
             self.assertEqual(count, 1)
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 6)
+            self.assertEqual(int(version), 7)
         finally:
             conn.close()
 
@@ -164,7 +164,7 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT version FROM memory_schema"
             ).fetchone()[0]
-            self.assertEqual(int(version), 6)
+            self.assertEqual(int(version), 7)
         finally:
             conn.close()
 
@@ -258,11 +258,11 @@ class PersonalMemoryStoreSchemaTests(unittest.TestCase):
             probe.close()
 
         store = PersonalMemoryStore(data_dir=self.data_dir)
-        self.assertEqual(store.SCHEMA_VERSION, 6)
+        self.assertEqual(store.SCHEMA_VERSION, 7)
         conn = store._connect()
         try:
             version = conn.execute("SELECT version FROM memory_schema").fetchone()[0]
-            self.assertEqual(int(version), 6)
+            self.assertEqual(int(version), 7)
             names = {
                 row[0]
                 for row in conn.execute("SELECT name FROM sqlite_master")
