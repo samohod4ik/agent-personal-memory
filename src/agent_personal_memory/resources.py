@@ -24,7 +24,9 @@ def available_memory():
                 cgroup = Path('/sys/fs/cgroup')
                 memberships = Path('/proc/self/cgroup').read_text().splitlines()
                 if (cgroup / 'memory.max').exists():
-                    group = next((line.split('::', 1)[1] for line in memberships if '::' in line), '/')
+                    group = next((line.split('::', 1)[1] for line in memberships if '::' in line), None)
+                    if group is None:
+                        raise ValueError('memory availability unavailable')
                     group_path = cgroup / group.lstrip('/')
                     while True:
                         maximum = (group_path / 'memory.max').read_text().strip()

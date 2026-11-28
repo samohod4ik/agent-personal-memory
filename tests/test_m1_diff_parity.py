@@ -1,7 +1,9 @@
 """Exhaustive synthetic parity for exact-span deletion matching."""
 import itertools
 import random
+import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from difflib import SequenceMatcher
 from agent_personal_memory.diff_exact import ExactSequenceMatcher
@@ -32,3 +34,16 @@ class TestM1DiffParity(unittest.TestCase):
         with patch("agent_personal_memory.diff_exact.available_memory", return_value=1):
             with self.assertRaises(MemoryError):
                 ExactSequenceMatcher(None, "abab", "baba", autojunk=False, threshold=0).get_opcodes()
+
+    @unittest.skipUnless(os.name == "posix", "Linux cgroup membership")
+    def test_missing_cgroup_v2_membership_is_not_assumed_to_be_root(self):
+        from agent_personal_memory.resources import available_memory
+        def read(path, *args, **kwargs):
+            if path == Path("/proc/meminfo"):
+                return "MemAvailable: 1000000 kB\n"
+            if path == Path("/proc/self/cgroup"):
+                return "1:cpu:/unexpected\n"
+            raise AssertionError(f"unexpected read: {path}")
+        with patch.object(Path, "exists", return_value=True), patch.object(Path, "read_text", read):
+            with self.assertRaises(ValueError):
+                available_memory()
